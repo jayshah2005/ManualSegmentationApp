@@ -364,14 +364,24 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
     leafLabel,
   ])
 
-  // Fullscreen-only keys: Escape, space / Ctrl|Cmd (pan), zoom shortcuts
-  // Brush size / undo handled by useBrushEditor
+  // Fullscreen-only keys: Escape always closes; space / Ctrl|Cmd (pan), zoom.
+  // Brush size / undo handled by useBrushEditor.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return
       if (e.key === 'Escape') {
         e.preventDefault()
+        e.stopPropagation()
+        // Blur any focused field so we exit fullscreen even while editing a label.
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur()
+        }
         void syncAndClose()
+        return
+      }
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
         return
       }
       // Block browser Select-All; it highlights the whole dialog and can
@@ -381,10 +391,8 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
         !e.altKey &&
         (e.key.toLowerCase() === 'a' || e.code === 'KeyA')
       ) {
-        if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
-          e.preventDefault()
-          window.getSelection()?.removeAllRanges()
-        }
+        e.preventDefault()
+        window.getSelection()?.removeAllRanges()
         return
       }
       if (e.key === ' ') {
@@ -426,11 +434,12 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
       spaceDownRef.current = false
       modPanRef.current = false
     }
-    window.addEventListener('keydown', onKey)
+    // Capture so Escape wins even if an input or child handler would swallow it.
+    window.addEventListener('keydown', onKey, true)
     window.addEventListener('keyup', onUp)
     window.addEventListener('blur', onBlur)
     return () => {
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('keyup', onUp)
       window.removeEventListener('blur', onBlur)
     }
