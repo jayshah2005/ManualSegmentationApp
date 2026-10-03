@@ -139,6 +139,41 @@ export function LeafRail() {
     }, BORDER_DEBOUNCE_MS)
   }
 
+  const focusLeafLabel = (displayIndex: number) => {
+    selectLeaf(displayIndex)
+    const card = cardRefs.current[displayIndex]
+    const input = labelInputRefs.current[displayIndex]
+    card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    // Defer so scroll/layout settle before focus.
+    window.setTimeout(() => {
+      input?.focus()
+      input?.select()
+    }, 0)
+  }
+
+  /** Tab / Shift+Tab only among leaf label inputs (skip buttons & sliders). */
+  const onLabelKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    displayIndex: number,
+  ) => {
+    if (e.key !== 'Tab') return
+    const leaves = session?.leaves ?? []
+    if (leaves.length === 0) return
+    e.preventDefault()
+    const order = leaves.map((l) => l.displayIndex)
+    const pos = order.indexOf(displayIndex)
+    if (pos < 0) return
+
+    if ((e.shiftKey && pos <= 0) || (!e.shiftKey && pos >= order.length - 1)) {
+      return
+    }
+    
+    const nextPos = e.shiftKey
+      ? (pos - 1 + order.length) % order.length
+      : (pos + 1) % order.length
+    focusLeafLabel(order[nextPos]!)
+  }
+
   const activeLeaf =
     session && selectedDisplayIndex != null
       ? session.leaves[selectedDisplayIndex]
@@ -152,10 +187,12 @@ export function LeafRail() {
         <p className="hint">
           Select mode: click a centroid, then set its label. Edit Border on the
           card or in Full screen (defaults to 0). Suggest borders fills heuristics.
+          Tab moves between label fields only.
         </p>
         <button
           type="button"
           className="btn ghost full"
+          tabIndex={-1}
           disabled={busy || !session?.leaves.length}
           onClick={() => void resuggestBorders()}
         >
@@ -177,6 +214,7 @@ export function LeafRail() {
               <button
                 type="button"
                 className="leaf-card-main"
+                tabIndex={-1}
                 onClick={() => {
                   selectLeaf(leaf.displayIndex)
                   setToolMode('select')
@@ -207,6 +245,7 @@ export function LeafRail() {
                     onChange={(e) =>
                       scheduleLabel(leaf.displayIndex, e.target.value)
                     }
+                    onKeyDown={(e) => onLabelKeyDown(e, leaf.displayIndex)}
                     onBlur={() =>
                       void setLeafLabel(
                         leaf.displayIndex,
@@ -225,6 +264,7 @@ export function LeafRail() {
                   </span>
                   <input
                     type="range"
+                    tabIndex={-1}
                     min={0}
                     max={50}
                     value={draftShrinks[leaf.displayIndex] ?? leaf.shrink}
@@ -243,6 +283,7 @@ export function LeafRail() {
               <button
                 type="button"
                 className="btn full leaf-fullscreen-btn"
+                tabIndex={-1}
                 disabled={busy}
                 onClick={() => {
                   selectLeaf(leaf.displayIndex)
@@ -267,6 +308,7 @@ export function LeafRail() {
           </span>
           <input
             type="range"
+            tabIndex={-1}
             min={2}
             max={60}
             value={brushSize}
@@ -280,6 +322,7 @@ export function LeafRail() {
           <button
             type="button"
             className="btn"
+            tabIndex={-1}
             disabled={!stack?.canUndo()}
             onClick={() => undo()}
           >
@@ -288,6 +331,7 @@ export function LeafRail() {
           <button
             type="button"
             className="btn"
+            tabIndex={-1}
             disabled={!stack?.canRedo()}
             onClick={() => redo()}
           >
@@ -297,6 +341,7 @@ export function LeafRail() {
         <button
           type="button"
           className="btn full"
+          tabIndex={-1}
           disabled={!activeLeaf || busy}
           onClick={() => void resetActiveMask()}
         >
@@ -305,6 +350,7 @@ export function LeafRail() {
         <label className="check-row">
           <input
             type="checkbox"
+            tabIndex={-1}
             checked={showPreview}
             onChange={(e) => setShowPreview(e.target.checked)}
           />
