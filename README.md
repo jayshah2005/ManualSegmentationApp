@@ -43,7 +43,7 @@ Save             →  ENVI crop + RGB preview per leaf
 
 ### What each stage does
 
-1. **Load** — Reads the camera PNG (`{id}/{id}.png`) and the reflectance cube (`results/REFLECTANCE_{id}.hdr`). Aligns the cube to the PNG orientation and builds an RGB preview from fixed Specim bands for the canvas and SAM.
+1. **Load** — Reads the camera PNG (`{id}/{id}.png`) and the reflectance cube (`results/REFLECTANCE_{id}.hdr`). Aligns the cube to the PNG orientation and builds an RGB preview from fixed Specim bands (peak-normalized so sticky notes stay readable). Use the top-bar **Brightness** control if foliage is too dark for brush work — display only; ENVI exports stay raw reflectance.
 
 2. **OCR** — Reads the yellow sticky note for a folder-style main label and numbered leaf labels. You can edit labels in the UI or re-run OCR.
 

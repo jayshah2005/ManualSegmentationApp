@@ -32,8 +32,10 @@ let catalogBooted = false
 
 const OVERLAY_COLOR_KEY = 'hsi.maskOverlayColor'
 const OVERLAY_OPACITY_KEY = 'hsi.maskOverlayOpacity'
+const VIEW_EXPOSURE_KEY = 'hsi.viewExposure'
 const DEFAULT_MASK_COLOR = '#3d9a6a'
 const DEFAULT_MASK_OPACITY = 0.45
+const DEFAULT_VIEW_EXPOSURE = 1
 
 function readStoredColor(): string {
   try {
@@ -53,6 +55,16 @@ function readStoredOpacity(): number {
     /* ignore */
   }
   return DEFAULT_MASK_OPACITY
+}
+
+function readStoredViewExposure(): number {
+  try {
+    const v = Number(localStorage.getItem(VIEW_EXPOSURE_KEY))
+    if (Number.isFinite(v)) return Math.min(3, Math.max(0.5, v))
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_VIEW_EXPOSURE
 }
 
 type AppState = {
@@ -105,6 +117,11 @@ type AppState = {
   maskOverlayColor: string
   /** Global mask overlay opacity 0–1. */
   maskOverlayOpacity: number
+  /**
+   * Display-only brightness for the canvas RGB (1 = as loaded).
+   * Does not change ENVI exports or re-run SAM.
+   */
+  viewExposure: number
 
   init: () => Promise<void>
   setVineType: (name: string) => Promise<void>
@@ -154,10 +171,38 @@ type AppState = {
   setLeafEditorOpen: (v: boolean) => void
   setMaskOverlayColor: (hex: string) => void
   setMaskOverlayOpacity: (opacity: number) => void
+  setViewExposure: (exposure: number) => void
 }
 
 /** Bumped on every brush edit so sync can tell if newer strokes arrived mid-upload. */
 let maskEditEpoch = 0
+
+/**
+ * Boot target across all vines (same priority as per-vine firstPending):
+ * 1. first Pending / Incomplete in catalog order
+ * 2. else first Skipped
+ * 3. else first folder that exists
+ */
+function pickBootSample(vines: VineInfo[]): { vineType: string; folder: string } | null {
+  const withFolders = vines.filter((v) => v.folders.length > 0)
+  if (!withFolders.length) return null
+
+  for (const v of withFolders) {
+    const active = v.folders.find(
+      (f) => f.status !== 'Completed' && f.status !== 'Skipped',
+    )
+    if (active) return { vineType: v.name, folder: active.folder }
+  }
+  for (const v of withFolders) {
+    const skipped = v.folders.find((f) => f.status === 'Skipped')
+    if (skipped) return { vineType: v.name, folder: skipped.folder }
+  }
+  const fallback = withFolders[0]
+  return {
+    vineType: fallback.name,
+    folder: fallback.folders[0]?.folder ?? '',
+  }
+}
 
 async function hydrateMasks(
   leaves: LeafInfo[],
@@ -226,6 +271,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   leafEditorOpen: false,
   maskOverlayColor: readStoredColor(),
   maskOverlayOpacity: readStoredOpacity(),
+  viewExposure: readStoredViewExposure(),
 
   setError: (e) => set({ error: e }),
   setLeafEditorOpen: (v) => set({ leafEditorOpen: v }),
@@ -248,6 +294,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       /* ignore */
     }
     set({ maskOverlayOpacity: next })
+  },
+
+  setViewExposure: (exposure) => {
+    const next = Math.min(3, Math.max(0.5, Math.round(exposure * 20) / 20))
+    try {
+      localStorage.setItem(VIEW_EXPOSURE_KEY, String(next))
+    } catch {
+      /* ignore */
+    }
+    set({ viewExposure: next })
   },
 
   init: async () => {
@@ -274,15 +330,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ vines, loading: false, busy: false })
         return
       }
-      const first: VineInfo = vines.find((v) => v.folderCount > 0) ?? vines[0]
-      if (!first) {
+      // Prefer a folder Save already advanced to; otherwise first pending
+      // across *all* vines (not just the first vine in the catalog).
+      const boot = pickBootSample(vines)
+      if (!boot) {
         set({ vines, loading: false, busy: false, error: 'No vine datasets configured' })
         return
       }
-      // Prefer a folder Save already advanced to; otherwise first pending.
-      const vineType = get().vineType || first.name
-      const folder =
-        get().folder || first.firstPending || first.folders[0]?.folder || ''
+      const vineType = get().vineType || boot.vineType
+      const folder = get().folder || boot.folder
       set({ vines, vineType, folder })
       if (folder) await get().reloadSession()
       else set({ loading: false, busy: false })

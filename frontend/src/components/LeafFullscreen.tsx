@@ -41,6 +41,7 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
   const rgbCacheKey = useAppStore((s) => s.rgbCacheKey)
   const selectLeaf = useAppStore((s) => s.selectLeaf)
   const maskOverlayColor = useAppStore((s) => s.maskOverlayColor)
+  const viewExposure = useAppStore((s) => s.viewExposure)
 
   const leaf = session?.leaves[displayIndex]
   const mask = leaf ? localMasks[leaf.maskIndex] : null
@@ -174,10 +175,13 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
     const imgW = session.width
     const imgH = session.height
     const rShrink = Math.max(0, shrink)
+    const exposure = useAppStore.getState().viewExposure
+    const rgbFilter = exposure !== 1 ? `brightness(${exposure})` : 'none'
 
     // Dim the whole crop so context stays visible but de-emphasized.
     const OUTSIDE_ALPHA = 0.22
     if (rgb) {
+      ctx.filter = rgbFilter
       ctx.globalAlpha = OUTSIDE_ALPHA
       ctx.drawImage(
         rgb,
@@ -191,6 +195,7 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
         drawH,
       )
       ctx.globalAlpha = 1
+      ctx.filter = 'none'
     }
 
     // Leaf cutout: border on original SAM + brush on top (consistent while painting).
@@ -234,7 +239,9 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
         }
       }
       cctx.putImageData(pixels, 0, 0)
+      ctx.filter = rgbFilter
       ctx.drawImage(cut, 0, 0, region.width, region.height, ox, oy, drawW, drawH)
+      ctx.filter = 'none'
     }
 
     // Thin outline of the selected mask for edge clarity.
@@ -255,6 +262,7 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
     drawBrushCursor,
     shrink,
     maskOverlayColor,
+    viewExposure,
   ])
 
   const bumpZoomLabel = () => {

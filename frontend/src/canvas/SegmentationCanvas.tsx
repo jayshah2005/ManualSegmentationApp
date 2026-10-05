@@ -54,6 +54,7 @@ export function SegmentationCanvas({ className }: Props) {
   const showPreview = useAppStore((s) => s.showPreview)
   const maskOverlayColor = useAppStore((s) => s.maskOverlayColor)
   const maskOverlayOpacity = useAppStore((s) => s.maskOverlayOpacity)
+  const viewExposure = useAppStore((s) => s.viewExposure)
   const busy = useAppStore((s) => s.busy)
   const loading = useAppStore((s) => s.loading)
   const setSeeds = useAppStore((s) => s.setSeeds)
@@ -115,7 +116,10 @@ export function SegmentationCanvas({ className }: Props) {
     const rgb = rgbRef.current
     if (rgb) {
       ctx.imageSmoothingEnabled = true
+      const exposure = useAppStore.getState().viewExposure
+      if (exposure !== 1) ctx.filter = `brightness(${exposure})`
       ctx.drawImage(rgb, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
+      if (exposure !== 1) ctx.filter = 'none'
     }
 
     const state = useAppStore.getState()
@@ -276,6 +280,7 @@ export function SegmentationCanvas({ className }: Props) {
     showPreview,
     maskOverlayColor,
     maskOverlayOpacity,
+    viewExposure,
     session,
     busy,
     loading,
