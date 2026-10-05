@@ -210,12 +210,14 @@ export function TopBar() {
       </button>
 
       <label
-        className="field compact"
+        className="field topbar-brightness"
         title="Display brightness only — does not change ENVI exports or SAM"
       >
-        <span>Brightness</span>
+        <span>
+          Brightness <strong>{viewExposure.toFixed(1)}×</strong>
+        </span>
         <input
-          type="number"
+          type="range"
           min={0.5}
           max={3}
           step={0.1}

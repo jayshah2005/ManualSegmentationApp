@@ -118,6 +118,12 @@ select {
   min-width: 0;
 }
 
+.field.topbar-brightness input[type='range'] {
+  width: 6.5rem;
+  min-width: 6.5rem;
+  accent-color: var(--accent);
+}
+
 .pill {
   display: inline-flex;
   flex-direction: column;
