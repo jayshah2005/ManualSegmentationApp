@@ -15,6 +15,8 @@ export function TopBar() {
   const session = useAppStore((s) => s.session)
   const ndviThresh = useAppStore((s) => s.ndviThresh)
   const minDistance = useAppStore((s) => s.minDistance)
+  const viewExposure = useAppStore((s) => s.viewExposure)
+  const setViewExposure = useAppStore((s) => s.setViewExposure)
   const busy = useAppStore((s) => s.busy)
   const loading = useAppStore((s) => s.loading)
   const setVineType = useAppStore((s) => s.setVineType)
@@ -207,6 +209,22 @@ export function TopBar() {
         Re-OCR
       </button>
 
+      <label
+        className="field topbar-brightness"
+        title="Display brightness only — does not change ENVI exports or SAM"
+      >
+        <span>
+          Brightness <strong>{viewExposure.toFixed(1)}×</strong>
+        </span>
+        <input
+          type="range"
+          min={0.5}
+          max={3}
+          step={0.1}
+          value={viewExposure}
+          onChange={(e) => setViewExposure(Number(e.target.value))}
+        />
+      </label>
       <label className="field compact">
         <span>NDVI</span>
         <input

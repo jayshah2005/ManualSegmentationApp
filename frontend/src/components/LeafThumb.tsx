@@ -28,6 +28,7 @@ export function LeafThumb({
   const samMask = useAppStore((s) => s.samMasks[maskIndex])
   const brushKeep = useAppStore((s) => s.brushKeeps[maskIndex])
   const rgbCacheKey = useAppStore((s) => s.rgbCacheKey)
+  const viewExposure = useAppStore((s) => s.viewExposure)
   const sessionShrink = useAppStore(
     (s) => s.session?.leaves.find((l) => l.maskIndex === maskIndex)?.shrink ?? 0,
   )
@@ -110,7 +111,10 @@ export function LeafThumb({
         }
       }
       cctx.putImageData(pixels, 0, 0)
+      const exposure = useAppStore.getState().viewExposure
+      if (exposure !== 1) ctx.filter = `brightness(${exposure})`
       ctx.drawImage(cut, 0, 0, region.width, region.height, ox, oy, dw, dh)
+      if (exposure !== 1) ctx.filter = 'none'
       void displayIndex
     }
 
@@ -128,6 +132,7 @@ export function LeafThumb({
     displayIndex,
     size,
     shrink,
+    viewExposure,
   ])
 
   return (

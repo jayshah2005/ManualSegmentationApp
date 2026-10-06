@@ -50,7 +50,12 @@ def load_sample_data(png_path: Path, hdr_path: Path) -> tuple[np.ndarray, np.nda
 
 
 def hsi_to_rgb(hsi_cube: np.ndarray) -> np.ndarray:
-    """Peak-normalize Specim IQ RGB bands to uint8 for SAM2 and the canvas."""
+    """Peak-normalize Specim IQ RGB bands to uint8 for SAM2 and the canvas.
+
+    Divides by the scene peak so bright sticky notes / badges stay readable
+    (percentile “leaf boost” stretches crush those highlights to pure white).
+    For dark foliage, use the UI **Brightness** control — display only.
+    """
     rgb_image = hsi_cube[:, :, RGB_BANDS].astype(np.float32)
     peak = float(rgb_image.max()) if rgb_image.size else 0.0
     if peak > 0:
