@@ -5,7 +5,12 @@ Override any path with the matching environment variable when running elsewhere.
 import os
 from pathlib import Path
 
-SAM2_DIR = Path(os.environ.get("SAM2_DIR", "/home/jay/Desktop/CODE/sam2/"))
+# Repo root: …/Segmentation (this file lives in backend/)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Local SAM 2 checkout under third_party/ (not ./sam2 — that name shadows the
+# Python package when the app cwd is the repo root). Override with SAM2_DIR.
+SAM2_DIR = Path(os.environ.get("SAM2_DIR", str(_REPO_ROOT / "third_party" / "sam2")))
 SAM2_CHECKPOINT = SAM2_DIR / "checkpoints" / "sam2.1_hiera_large.pt"
 SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 

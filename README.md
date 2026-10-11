@@ -1,28 +1,150 @@
 # HSI Leaf Curation
 
-Manual curation tool for hyperspectral (HSI) leaf images. The app proposes leaf masks with **NDVI + SAM 2**, then lets you correct seeds, trim borders, and brush-edit before exporting ENVI crops for downstream analysis.
+Manual curation tool for hyperspectral (HSI) leaf captures. The app proposes leaf masks with **NDVI + SAM 2**, then lets you fix seeds, trim borders, brush-edit, and label leaves before exporting ENVI crops.
+
+Stack: **FastAPI + React** (this app). An older Streamlit script still lives in the repo for reference only.
 
 ---
 
-## Technologies
+## Prerequisites
 
-| Layer | What we use |
-|--------|-------------|
-| **UI** | React 19, TypeScript, Vite, Zustand |
-| **API** | Python 3.12, FastAPI, Uvicorn, Pydantic |
-| **Segmentation** | [SAM 2](https://github.com/facebookresearch/sam2) (Hiera Large) with positive point prompts |
-| **Seeds** | NDVI peaks on the Specim cube (`scikit-image` local maxima) |
-| **Labels** | EasyOCR on the sticky-note region of the camera PNG |
-| **HSI I/O** | `spectral` (ENVI), OpenCV, NumPy, Pillow |
-| **Runtime** | [uv](https://docs.astral.sh/uv/) for Python deps; Node 20+ for the frontend; PyTorch (CUDA wheel with CPU fallback) |
+| Tool | Why |
+|------|-----|
+| **[uv](https://docs.astral.sh/uv/)** | Python deps + virtualenv |
+| **Node.js 20+** and npm | Frontend (Vite) |
+| **Git** | Clone this repo and SAM 2 |
+| **GPU (optional)** | CUDA PyTorch is faster; CPU works but SAM is slow |
 
-Paths (input vines, output folder, SAM2 install) live in [`backend/config.py`](backend/config.py) and can be overridden with environment variables.
+You also need:
+
+1. Access to your Specim IQ sample folders (per vine type).
+2. A writable output directory for exports + `progress.json`.
 
 ---
 
-## Segmentation pipeline
+## One-time setup
 
-Each sample is one Specim IQ capture folder. Processing order:
+Do this from the **repository root** (`Segmentation/`).
+
+### 1. Clone SAM 2 into this repo
+
+SAM 2 lives under **`third_party/sam2`** (gitignored — each machine clones its own copy).
+
+Do **not** put the checkout at `./sam2` in the repo root: that folder name shadows the `sam2` Python package when you run the app from this directory.
+
+```bash
+mkdir -p third_party
+git clone https://github.com/facebookresearch/sam2.git third_party/sam2
+```
+
+If you already have a checkout elsewhere:
+
+```bash
+mkdir -p third_party
+mv /path/to/sam2 third_party/sam2
+# or: ln -s /path/to/sam2 third_party/sam2
+```
+
+### 2. Download the SAM 2.1 Large checkpoint
+
+Default config expects:
+
+```text
+third_party/sam2/checkpoints/sam2.1_hiera_large.pt
+```
+
+```bash
+cd third_party/sam2/checkpoints
+./download_ckpts.sh          # downloads several sizes; Large is required
+cd ../../..
+```
+
+Confirm the file exists:
+
+```bash
+ls -lh third_party/sam2/checkpoints/sam2.1_hiera_large.pt
+```
+
+### 3. Point the app at your data
+
+Edit path defaults in [`backend/config.py`](backend/config.py), **or** set environment variables (preferred on shared machines):
+
+| Variable | Purpose |
+|----------|---------|
+| `HSI_BACO` | Root folder of Baco samples |
+| `HSI_CHARDONNAY` | Root folder of Chardonnay samples |
+| `HSI_CAB_FRANC` | Root folder of Cab Franc samples |
+| `HSI_VIDAL` | Root folder of Vidal samples |
+| `OUTPUT_BASE_DIR` | Where exports + `progress.json` are written |
+| `SAM2_DIR` | Override if SAM 2 is not at `third_party/sam2` |
+
+Each vine root must contain Specim folders like:
+
+```text
+{vineRoot}/{sampleId}/{sampleId}.png
+{vineRoot}/{sampleId}/results/REFLECTANCE_{sampleId}.hdr
+{vineRoot}/{sampleId}/results/REFLECTANCE_{sampleId}.img
+```
+
+### 4. Install dependencies
+
+```bash
+uv sync
+cd frontend && npm install && cd ..
+```
+
+`uv sync` installs Python packages and links the local `third_party/sam2` package (editable). CUDA extension build for SAM is **off** by default (`SAM2_BUILD_CUDA=0`) so install works without a matching `nvcc`.
+
+---
+
+## Run the app (dev)
+
+```bash
+./run_dev.sh
+```
+
+- UI: **http://127.0.0.1:5173**
+- API: **http://127.0.0.1:8000** (Vite proxies `/api`)
+
+Or separately:
+
+```bash
+./scripts/run_backend.py
+./scripts/run_frontend.sh
+```
+
+First sample load warms **SAM 2** and **EasyOCR** — expect a pause once per process.
+
+---
+
+## First-time walkthrough
+
+1. Open the UI and pick a **vine type** + **sample**. Status comes from `OUTPUT_BASE_DIR/progress.json` (`Pending` / `Incomplete` / `Completed` / `Skipped`).
+2. Check the **main label** (OCR may have filled it). Fix it or use **Re-OCR**.
+3. **Seeds** (green dots) — one prompt per leaf you care about.
+   - Click empty leaf → add seed (SAM re-runs).
+   - Click a green dot → remove it.
+   - **Reset seeds** restores NDVI auto-seeds (or clears them if auto would over-seed).
+4. **Select** a leaf on the canvas or in the right rail.
+5. **Brush** — **Add (A)** / **Remove (D)**; drag to paint. `[` / `]` or the size slider change diameter. **Ctrl/Cmd+Z** undo.
+6. **Border** on the leaf card (or fullscreen) peels SAM fringe inward; brush strokes stay put.
+7. **Full screen / edit** for zoomed work. **Esc** closes and syncs. Save stays on the main action bar.
+8. Set each **leaf label** in the rail (shows on the main image).
+9. **Save progress** — export crops, mark **Incomplete**, stay on this sample.  
+   **Complete ▶** — export, mark **Completed**, advance to the next pending sample.  
+   **Skip** — no export; advance.  
+   If export folders already exist, you get a confirmation before overwrite.
+
+### Tips
+
+- Place one seed near the **center** of each leaf; avoid stems and background.
+- Prefer raising **Border** before fine brush work when SAM leaks onto background.
+- **Brightness** in the top bar is display-only (helps dark foliage); ENVI exports stay raw reflectance.
+- Mask tint / opacity live in the top bar (saved in the browser).
+
+---
+
+## How the pipeline works
 
 ```text
 Load PNG + reflectance cube
@@ -33,112 +155,30 @@ NDVI seed peaks  →  (or empty if too many — place seeds by hand)
         ↓
 SAM 2            →  one mask per seed
         ↓
-Sort leaves for UI (left column → right column → sticky-note leaf)
+Sort leaves for UI (left → right → sticky-note leaf)
         ↓
-You edit: seeds · border shrink · brush add/erase
+You edit: seeds · border shrink · brush add/erase · labels
         ↓
 Save             →  ENVI crop + RGB preview per leaf
-                     Complete ▶ marks Completed and advances; Save progress marks Incomplete and stays
 ```
 
-### What each stage does
+| Stage | What it does |
+|-------|----------------|
+| **Load** | Camera PNG + reflectance cube; RGB preview from fixed Specim bands |
+| **OCR** | Sticky-note text → main / leaf labels (editable) |
+| **NDVI seeds** | Peaks as SAM prompts; if more than five, seeds clear for manual placement |
+| **SAM 2** | One positive point per seed; cleaned masks |
+| **Border** | Erodes the *original SAM* only; never re-trims brush paint |
+| **Brush** | Add/erase on top of bordered SAM (final layer) |
+| **Save** | Crop cube per leaf → `Data/{vine}/{mainLabel}/{leafLabel}/` |
 
-1. **Load** — Reads the camera PNG (`{id}/{id}.png`) and the reflectance cube (`results/REFLECTANCE_{id}.hdr`). Aligns the cube to the PNG orientation and builds an RGB preview from fixed Specim bands (peak-normalized so sticky notes stay readable). Use the top-bar **Brightness** control if foliage is too dark for brush work — display only; ENVI exports stay raw reflectance.
-
-2. **OCR** — Reads the yellow sticky note for a folder-style main label and numbered leaf labels. You can edit labels in the UI or re-run OCR.
-
-3. **NDVI seeds** — Computes NDVI from NIR/red bands and finds peaks as SAM prompts. If there are more than five automatic peaks, seeds are cleared so you place them manually (avoids noisy over-segmentation).
-
-4. **SAM 2** — Runs one positive point per seed and cleans each mask. Seeds and masks stay linked by **mask index** (seed order). The right-hand rail uses a separate **display index** (spatial sort).
-
-5. **Border** — Shrinks the *original SAM* mask inward (morphological erode). Changing the border never re-trims your brush strokes.
-
-6. **Brush** — Add and erase paint on top of the bordered SAM. Brush paint is the final layer (including reclaiming fringe after a larger border).
-
-7. **Save** — For each leaf: apply border + brush, crop the HSI cube, write ENVI (`.hdr` / `.img`) plus an RGB PNG under  
-   `Data/{vineType}/{mainLabel}/{leafLabel}/`.  
-   Progress is stored in `Data/progress.json` (`Completed`, `Incomplete`, or `Skipped`).
-
-**Complete ▶** marks the sample Completed and jumps to the next **pending** folder (Pending/Incomplete first; Skipped only when nothing else remains). **Save progress** exports the same crops but marks **Incomplete** and stays on the current sample. **Skip** marks Skipped and advances the same way (pending first, then skipped).
+**Indexing:** seeds/masks use **mask index** (seed order). The right rail uses **display index** (spatial sort).
 
 ---
 
-## Using the app
+## Outputs
 
-### Start
-
-```bash
-# From this folder
-uv sync          # first time / after dependency changes
-./run_dev.sh     # API on :8000, UI on :5173
-```
-
-Open **http://127.0.0.1:5173**.
-
-Or run pieces separately:
-
-```bash
-./scripts/run_backend.py    # http://127.0.0.1:8000
-./scripts/run_frontend.sh   # http://127.0.0.1:5173 (proxies /api)
-```
-
-Needs: **uv**, **Node 20+**, and SAM 2 checked out next to this repo (default `../sam2` with checkpoint under `sam2/checkpoints/`).
-
-### Typical curation flow
-
-1. **Choose vine type and sample** in the top bar. Status shows Pending / Incomplete / Completed / Skipped from `progress.json`.
-
-2. **Check the main label** (OCR may have filled it). Fix it if needed; use **Re-OCR** when the sticky note was misread.
-
-3. **Seeds mode** — Green dots are SAM prompts.
-   - Click empty leaf area → add a seed (SAM re-runs).
-   - Click an existing green dot → remove it.
-   - **Reset seeds** restores NDVI auto-seeds (or clears them if auto would over-seed).
-
-4. **Select a leaf** — Use **Select** mode on the canvas, or click a card in the right rail.
-
-5. **Brush mode** — Paint the selected leaf.
-   - **Add** / **Remove** in the top bar (or **A** / **D** keys in brush / fullscreen edit).
-   - Drag to paint; the on-screen circle matches the stamp.
-   - `[` / `]` or the size slider change brush diameter; mouse wheel on the main canvas also nudges size.
-   - **Ctrl/Cmd+Z** undo · **Ctrl/Cmd+Shift+Z** redo.
-
-6. **Border** — On a leaf card (or in fullscreen), raise **Border** to peel SAM fringe inward. Brush strokes stay put when you change border.
-
-7. **Full screen / edit** — Zoomed workspace for one leaf:
-   - Scroll: zoom **in** toward the cursor, zoom **out** toward center / default view.
-   - Pan: Space+drag, Ctrl/Cmd+drag, or middle-click.
-   - Same brush / border / undo tools; **Reset** restores the original SAM for that leaf.
-   - **Esc** closes and syncs edits. Save is still on the main action bar.
-
-8. **Labels & thumbs** — Edit each leaf label in the rail. Thumbs show the live cutout (border + brush).
-
-9. **Save progress** — Exports crops and marks the sample **Incomplete** (stay here to keep editing). **Complete ▶** marks **Completed** and jumps to the next pending sample (tool resets to **Seeds**). **Skip** advances without export. On refresh / boot, the app opens the first Pending/Incomplete sample; if none are left, it opens a Skipped one. If export folders already exist, you get a confirmation before overwriting.
-
-### Mask appearance
-
-Use the mask color control in the top bar to set overlay tint and opacity (saved in the browser). Preview mode dims non-selected leaves so the active one stands out.
-
-### Tips
-
-- Place **one seed near the center** of each leaf you care about; avoid stems and background.
-- If SAM leaks onto background, raise **Border** first, then brush fine detail.
-- Prefer brush **erase** for holes and sticky-note bleed; prefer **add** when reclaiming a trimmed edge.
-- Undo is per stroke and per leaf; resetting a leaf clears brush ownership for that leaf.
-
----
-
-## Data layout
-
-**Inputs** (per vine root in `backend/config.py`):
-
-```text
-{vineRoot}/{sampleId}/{sampleId}.png
-{vineRoot}/{sampleId}/results/REFLECTANCE_{sampleId}.hdr
-{vineRoot}/{sampleId}/results/REFLECTANCE_{sampleId}.img
-```
-
-**Outputs** (`OUTPUT_BASE_DIR`, default `~/Desktop/CODE/Data`):
+Default `OUTPUT_BASE_DIR` is set in `backend/config.py` (override with env):
 
 ```text
 Data/progress.json
@@ -147,18 +187,48 @@ Data/{vineType}/{mainLabel}/{leafLabel}/{leafLabel}.hdr
 Data/{vineType}/{mainLabel}/{leafLabel}/{leafLabel}.img
 ```
 
-Useful env overrides: `HSI_BACO`, `HSI_CHARDONNAY`, `HSI_CAB_FRANC`, `HSI_VIDAL`, `OUTPUT_BASE_DIR`, `SAM2_DIR`, `HSI_HOST`, `HSI_PORT`.
+Queue on boot / after Complete or Skip: first **Pending/Incomplete** across vines, then **Skipped** if nothing else remains.
 
 ---
 
 ## Production (single process)
 
 ```bash
-cd frontend && npm run build
+cd frontend && npm run build && cd ..
 ./scripts/run_backend.py
 ```
 
-Open **http://127.0.0.1:8000** — the API serves the built UI from `frontend/dist`.
+Open **http://127.0.0.1:8000** — the API serves `frontend/dist`.
+
+Useful runtime env: `HSI_HOST`, `HSI_PORT`, `SAM2_BUILD_CUDA=1` (only if you intentionally build the CUDA extension).
+
+---
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---------|----------------|
+| `ModuleNotFoundError: sam2` / uv sync fails on SAM-2 | `third_party/sam2` exists and is a full SAM 2 clone; then `uv sync` again |
+| RuntimeError about running from parent of sam2 repo | Checkout must be `third_party/sam2`, not a top-level `./sam2` folder |
+| SAM fails / missing checkpoint | `third_party/sam2/checkpoints/sam2.1_hiera_large.pt` present |
+| No samples in the dropdown | Vine roots in `backend/config.py` / `HSI_*` env vars point at real folders |
+| Blank or wrong RGB | Sample has both `{id}.png` and `results/REFLECTANCE_{id}.hdr` |
+| Very slow first load | Normal — SAM + EasyOCR warm up once per process |
+| CUDA / nvcc build errors during install | Keep `SAM2_BUILD_CUDA=0` (default in `run_dev.sh`) |
+
+---
+
+## Repo layout
+
+```text
+Segmentation/
+  backend/           FastAPI app, pipeline, config
+  frontend/          React UI
+  third_party/sam2/  Local SAM 2 clone (gitignored) + checkpoints
+  scripts/           Backend / frontend helpers
+  run_dev.sh         Start API + Vite together
+  manual_ndvi_sam_segmentation.py   Legacy Streamlit UI
+```
 
 ---
 
