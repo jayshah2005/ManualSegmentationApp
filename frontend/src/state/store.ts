@@ -3,8 +3,10 @@
  *
  * Ownership split
  * ---------------
- * Server: sample load, SAM, OCR, shrink metadata, ENVI export, progress.json
- * Client: brush painting (`localMasks`), undo stacks, tool/brush UI state
+ * Server: sample load, SAM, OCR, shrink persistence, ENVI export, progress.json
+ * Client: brush painting (`localMasks` / `brushKeeps`), undo stacks, tool UI
+ * Client-authoritative while editing: ``session.leaves[].shrink`` and labels
+ * (optimistic). Mask push must not overwrite that metadata.
  *
  * Flow: `init` → load session → edit seeds/masks locally → sync or save.
  * `masksDirty` means local brush edits are ahead of the server; sync before
@@ -142,6 +144,13 @@ type AppState = {
   setMainFolderLabel: (label: string) => void
   redetectOcr: () => Promise<void>
   setShrink: (displayIndex: number, shrink: number) => Promise<void>
+  /**
+   * Optimistic border update + debounced API write. Prefer this from sliders;
+   * call ``flushShrinks`` before fullscreen open/close or save.
+   */
+  scheduleShrink: (displayIndex: number, shrink: number) => void
+  /** Flush pending border debounces and await in-flight shrink POSTs. */
+  flushShrinks: () => Promise<void>
   resuggestBorders: () => Promise<void>
   /** Snapshot mask for undo before the first stamp of a drag stroke. */
   beginStroke: (maskIndex: number) => void
@@ -176,6 +185,81 @@ type AppState = {
 
 /** Bumped on every brush edit so sync can tell if newer strokes arrived mid-upload. */
 let maskEditEpoch = 0
+
+const SHRINK_DEBOUNCE_MS = 150
+
+/**
+ * Debounced border (shrink) API writes. Optimistic values live on
+ * ``session.leaves[].shrink`` immediately; these timers only POST to the server.
+ */
+const shrinkTimers: Record<number, ReturnType<typeof setTimeout>> = {}
+/** In-flight shrink POSTs so ``flushShrinks`` can await them. */
+const shrinkInflight = new Map<number, Promise<void>>()
+/** Coalesce concurrent ``syncMasksToServer`` callers onto one upload. */
+let syncMasksPromise: Promise<void> | null = null
+
+function clampShrink(n: number): number {
+  return Math.max(0, Math.min(50, Math.round(n)))
+}
+
+/**
+ * Keep client leaf shrink (and optionally label) when applying a server snapshot
+ * that should not reset them (e.g. shrink for other leaves, OCR must not wipe borders).
+ */
+function mergeLeavesPreservingLocalMeta(
+  server: SessionPayload,
+  local: SessionPayload | null,
+  opts?: { serverShrinkFor?: number; keepLocalLabels?: boolean },
+): SessionPayload {
+  if (!local || local.sampleKey !== server.sampleKey) return server
+  const keepLabels = opts?.keepLocalLabels !== false
+  const localByDi = new Map(local.leaves.map((l) => [l.displayIndex, l]))
+  return {
+    ...server,
+    leaves: server.leaves.map((leaf) => {
+      const prev = localByDi.get(leaf.displayIndex)
+      if (!prev) return leaf
+      const takeServerShrink =
+        opts?.serverShrinkFor != null && leaf.displayIndex === opts.serverShrinkFor
+      return {
+        ...leaf,
+        shrink: takeServerShrink ? leaf.shrink : prev.shrink,
+        label: keepLabels ? prev.label : leaf.label,
+      }
+    }),
+  }
+}
+
+/** Patch leaf labels onto a session snapshot (optimistic UI + post-API apply). */
+function withLeafLabels(
+  session: SessionPayload,
+  sublabels: string[],
+): SessionPayload {
+  const leaves = session.leaves.map((leaf, i) => ({
+    ...leaf,
+    label: i < sublabels.length ? String(sublabels[i] ?? '') : leaf.label,
+  }))
+  return {
+    ...session,
+    leaves,
+    sublabels: leaves.map((l) => l.label),
+  }
+}
+
+function clearShrinkTimer(displayIndex: number): void {
+  const t = shrinkTimers[displayIndex]
+  if (t) {
+    clearTimeout(t)
+    delete shrinkTimers[displayIndex]
+  }
+}
+
+function clearAllShrinkTimers(): void {
+  for (const id of Object.keys(shrinkTimers)) {
+    clearTimeout(shrinkTimers[Number(id)])
+    delete shrinkTimers[Number(id)]
+  }
+}
 
 /**
  * Boot target across all vines (same priority as per-vine firstPending):
@@ -376,6 +460,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? prevSel
             : 0
     maskEditEpoch = 0
+    clearAllShrinkTimers()
+    shrinkInflight.clear()
     // Keep an established main folder label across sample advances; fill from
     // OCR/server only when we do not already have one (first sample / vine).
     const prevMain = get().mainFolderLabel.trim()
@@ -556,15 +642,39 @@ export const useAppStore = create<AppState>((set, get) => ({
     const gen = loadRequestId
     const sampleKey = get().session?.sampleKey
     const trimmed = mainLabel.trim()
-    set({ mainFolderLabel: trimmed })
+    const normalized = sublabels.map((s) => String(s ?? ''))
+    // Optimistic: main canvas reads ``session.leaves[].label`` — update immediately.
+    const cur = get().session
+    if (cur && cur.sampleKey === sampleKey) {
+      set({
+        session: {
+          ...withLeafLabels(cur, normalized),
+          mainLabel: trimmed,
+        },
+        mainFolderLabel: trimmed,
+      })
+    } else {
+      set({ mainFolderLabel: trimmed })
+    }
     try {
-      const s = await api.updateOcr({ mainLabel: trimmed, sublabels, sampleKey })
+      const s = await api.updateOcr({
+        mainLabel: trimmed,
+        sublabels: normalized,
+        sampleKey,
+      })
       if (gen !== loadRequestId) return
       if (get().session?.sampleKey !== sampleKey) return
       const prev = get().localMasks
+      const local = get().session
+      // Keep local borders; apply the labels we just wrote (do not keep stale labels).
+      const merged = mergeLeavesPreservingLocalMeta(s, local, {
+        keepLocalLabels: false,
+      })
       set({
-        session: s,
-        // Keep in-memory brush edits; only metadata (labels) changed.
+        session: {
+          ...withLeafLabels(merged, normalized),
+          mainLabel: trimmed,
+        },
         localMasks: prev,
         mainFolderLabel: trimmed || get().mainFolderLabel,
       })
@@ -579,9 +689,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!session) return
     const n = session.leaves.length
     const drafts = get().draftLeafLabels
+    const next = String(label ?? '')
     const sublabels = Array.from({ length: n }, (_, i) => {
-      if (i === displayIndex) return label.trim()
-      if (drafts[i] != null) return drafts[i]
+      if (i === displayIndex) return next.trim()
+      if (drafts[i] != null) return String(drafts[i])
       return session.sublabels[i] ?? session.leaves[i]?.label ?? ''
     })
     const main = get().mainFolderLabel.trim() || session.mainLabel
@@ -589,10 +700,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setMainFolderLabel: (label) => set({ mainFolderLabel: label }),
-  setDraftLeafLabel: (displayIndex, label) =>
-    set({
-      draftLeafLabels: { ...get().draftLeafLabels, [displayIndex]: label },
-    }),
+  setDraftLeafLabel: (displayIndex, label) => {
+    const next = String(label ?? '')
+    const cur = get().session
+    const nextDrafts = { ...get().draftLeafLabels, [displayIndex]: next }
+    if (cur?.leaves[displayIndex]) {
+      const leaves = cur.leaves.map((l) =>
+        l.displayIndex === displayIndex ? { ...l, label: next } : l,
+      )
+      const sublabels = leaves.map((l) => l.label)
+      set({
+        draftLeafLabels: nextDrafts,
+        session: { ...cur, leaves, sublabels },
+      })
+    } else {
+      set({ draftLeafLabels: nextDrafts })
+    }
+  },
 
   redetectOcr: async () => {
     const gen = loadRequestId
@@ -620,8 +744,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setShrink: async (displayIndex, shrink) => {
     const gen = loadRequestId
     const sampleKey = get().session?.sampleKey
-    const nextShrink = Math.max(0, Math.min(50, Math.round(shrink)))
-    // Optimistic: keep main canvas / rail in sync while the API round-trip runs.
+    const nextShrink = clampShrink(shrink)
+    clearShrinkTimer(displayIndex)
+    // Optimistic: keep main canvas / rail / fullscreen in sync while the API runs.
     const cur = get().session
     if (cur?.leaves[displayIndex]) {
       const leaves = cur.leaves.map((l) =>
@@ -629,46 +754,88 @@ export const useAppStore = create<AppState>((set, get) => ({
       )
       set({ session: { ...cur, leaves } })
     }
-    try {
-      if (get().masksDirty) await get().syncMasksToServer()
-      if (gen !== loadRequestId) return
-      const s = await api.updateShrink({
-        displayIndex,
-        shrink: nextShrink,
-        sampleKey,
-      })
-      if (gen !== loadRequestId) return
-      if (get().session?.sampleKey !== sampleKey) return
-      // Keep local masks; only update leaf metadata from server
-      const { localMasks } = get()
-      const leaves = s.leaves.map((leaf) =>
-        leaf.displayIndex === displayIndex
-          ? { ...leaf, shrink: nextShrink }
-          : leaf,
-      )
-      set({
-        session: { ...s, leaves },
-        localMasks,
-      })
-      // Refresh mask png from server only if we don't have local
-      const missing = leaves.filter((l) => !localMasks[l.maskIndex])
-      if (missing.length) {
-        const { width, height } = s
-        const next = { ...localMasks }
-        for (const leaf of missing) {
-          next[leaf.maskIndex] = await pngBase64ToMask(
-            leaf.maskPngBase64,
-            width,
-            height,
-          )
-        }
+    const run = (async () => {
+      try {
+        if (get().masksDirty) await get().syncMasksToServer()
+        if (gen !== loadRequestId) return
+        const s = await api.updateShrink({
+          displayIndex,
+          shrink: nextShrink,
+          sampleKey,
+        })
         if (gen !== loadRequestId) return
         if (get().session?.sampleKey !== sampleKey) return
-        set({ localMasks: next })
+        const local = get().session
+        // Keep other leaves' local borders/labels; take this leaf's shrink from us.
+        const merged = mergeLeavesPreservingLocalMeta(s, local, {
+          serverShrinkFor: displayIndex,
+        })
+        const leaves = merged.leaves.map((leaf) =>
+          leaf.displayIndex === displayIndex
+            ? { ...leaf, shrink: nextShrink }
+            : leaf,
+        )
+        set({ session: { ...merged, leaves } })
+        // Refresh mask png from server only if we don't have local
+        const { localMasks } = get()
+        const missing = leaves.filter((l) => !localMasks[l.maskIndex])
+        if (missing.length) {
+          const { width, height } = s
+          const next = { ...localMasks }
+          for (const leaf of missing) {
+            next[leaf.maskIndex] = await pngBase64ToMask(
+              leaf.maskPngBase64,
+              width,
+              height,
+            )
+          }
+          if (gen !== loadRequestId) return
+          if (get().session?.sampleKey !== sampleKey) return
+          set({ localMasks: next })
+        }
+      } catch (e) {
+        if (gen !== loadRequestId || e instanceof StaleSampleError) return
+        set({ error: String(e) })
       }
-    } catch (e) {
-      if (gen !== loadRequestId || e instanceof StaleSampleError) return
-      set({ error: String(e) })
+    })()
+    shrinkInflight.set(displayIndex, run)
+    try {
+      await run
+    } finally {
+      if (shrinkInflight.get(displayIndex) === run) {
+        shrinkInflight.delete(displayIndex)
+      }
+    }
+  },
+
+  scheduleShrink: (displayIndex, shrink) => {
+    const nextShrink = clampShrink(shrink)
+    const cur = get().session
+    if (cur?.leaves[displayIndex]) {
+      const leaves = cur.leaves.map((l) =>
+        l.displayIndex === displayIndex ? { ...l, shrink: nextShrink } : l,
+      )
+      set({ session: { ...cur, leaves } })
+    } else if (!cur) {
+      return
+    }
+    clearShrinkTimer(displayIndex)
+    shrinkTimers[displayIndex] = setTimeout(() => {
+      delete shrinkTimers[displayIndex]
+      void get().setShrink(displayIndex, nextShrink)
+    }, SHRINK_DEBOUNCE_MS)
+  },
+
+  flushShrinks: async () => {
+    const pending = Object.keys(shrinkTimers).map(Number)
+    for (const displayIndex of pending) {
+      clearShrinkTimer(displayIndex)
+      const leaf = get().session?.leaves.find((l) => l.displayIndex === displayIndex)
+      if (leaf) void get().setShrink(displayIndex, leaf.shrink)
+    }
+    // Await every in-flight write, including ones started above.
+    while (shrinkInflight.size) {
+      await Promise.all([...shrinkInflight.values()])
     }
   },
 
@@ -812,9 +979,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const stacks = { ...get().undoStacks }
       stacks[maskIndex]?.clear()
       const rev = (get().maskRevisions[maskIndex] ?? 0) + 1
+      const local = get().session
+      const merged = mergeLeavesPreservingLocalMeta(s, local)
       // Keep masksDirty if other leaves still have unsynced brush edits.
       set({
-        session: s,
+        session: merged,
         localMasks: { ...get().localMasks, [maskIndex]: mask },
         samMasks: { ...get().samMasks, [maskIndex]: sam },
         brushKeeps: {
@@ -837,47 +1006,68 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   syncMasksToServer: async () => {
-    const { session, localMasks, brushKeeps, masksDirty } = get()
-    if (!session || !masksDirty) return
-    const gen = loadRequestId
-    const sampleKey = session.sampleKey
-    const epochAtStart = maskEditEpoch
-    const payload = []
-    for (const leaf of session.leaves) {
-      const m = localMasks[leaf.maskIndex]
-      if (!m) continue
-      const b64 = await maskToPngBase64(m, session.width, session.height)
-      const keep = brushKeeps[leaf.maskIndex]
-      const keepB64 = keep
-        ? await maskToPngBase64(keep, session.width, session.height)
-        : undefined
-      payload.push({
-        maskIndex: leaf.maskIndex,
-        maskPngBase64: b64,
-        ...(keepB64 ? { brushKeepPngBase64: keepB64 } : {}),
-      })
+    // Single-flight: concurrent callers await the same upload, then re-check dirty.
+    if (syncMasksPromise) {
+      await syncMasksPromise
+      if (get().masksDirty) return get().syncMasksToServer()
+      return
     }
-    if (!payload.length) return
-    if (gen !== loadRequestId) return
-    if (get().session?.sampleKey !== sampleKey) return
+    syncMasksPromise = (async () => {
+      while (get().masksDirty) {
+        const { session, localMasks, brushKeeps } = get()
+        if (!session) return
+        const gen = loadRequestId
+        const sampleKey = session.sampleKey
+        const epochAtStart = maskEditEpoch
+        const payload = []
+        for (const leaf of session.leaves) {
+          const m = localMasks[leaf.maskIndex]
+          if (!m) continue
+          const b64 = await maskToPngBase64(m, session.width, session.height)
+          const keep = brushKeeps[leaf.maskIndex]
+          const keepB64 = keep
+            ? await maskToPngBase64(keep, session.width, session.height)
+            : undefined
+          payload.push({
+            maskIndex: leaf.maskIndex,
+            maskPngBase64: b64,
+            ...(keepB64 ? { brushKeepPngBase64: keepB64 } : {}),
+          })
+        }
+        if (!payload.length) {
+          set({ masksDirty: false })
+          return
+        }
+        if (gen !== loadRequestId) return
+        if (get().session?.sampleKey !== sampleKey) return
+        try {
+          await api.pushMasks(payload, sampleKey)
+          if (gen !== loadRequestId) return
+          if (get().session?.sampleKey !== sampleKey) return
+          // Do NOT replace ``session`` here. pushMasks returns a full snapshot
+          // whose leaf shrinks/labels can be stale relative to optimistic local
+          // edits (rail border → fullscreen brush → close). Local masks stay
+          // authoritative in ``localMasks`` / ``brushKeeps``.
+          set({
+            masksDirty: maskEditEpoch !== epochAtStart,
+          })
+        } catch (e) {
+          if (e instanceof StaleSampleError) return
+          throw e
+        }
+      }
+    })()
     try {
-      const s = await api.pushMasks(payload, sampleKey)
-      if (gen !== loadRequestId) return
-      if (get().session?.sampleKey !== sampleKey) return
-      // Only clear dirty if no newer strokes arrived while we were uploading.
-      set({
-        session: s,
-        masksDirty: maskEditEpoch !== epochAtStart,
-      })
-    } catch (e) {
-      if (e instanceof StaleSampleError) return
-      throw e
+      await syncMasksPromise
+    } finally {
+      syncMasksPromise = null
     }
   },
 
   save: async (opts) => {
     const complete = opts?.complete !== false
     let forceOverwrite = opts?.forceOverwrite === true
+    await get().flushShrinks()
     const { session, localMasks, brushKeeps, vineType, mainFolderLabel, draftLeafLabels } =
       get()
     if (!session) return

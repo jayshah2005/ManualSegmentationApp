@@ -226,7 +226,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "python-multipart", specifier = ">=0.0.12" },
-    { name = "sam-2", editable = "../sam2" },
+    { name = "sam-2", editable = "third_party/sam2" },
     { name = "scikit-image", specifier = ">=0.22" },
     { name = "spectral", specifier = ">=0.23" },
     { name = "torch", specifier = ">=2.5.1", index = "https://download.pytorch.org/whl/cu130" },
@@ -1045,7 +1045,7 @@ wheels = [
 [[package]]
 name = "sam-2"
 version = "1.0"
-source = { editable = "../sam2" }
+source = { editable = "third_party/sam2" }
 dependencies = [
     { name = "hydra-core" },
     { name = "iopath" },

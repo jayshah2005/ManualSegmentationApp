@@ -4,6 +4,8 @@
  *
  * Labeling: Select mode → click a centroid → card focuses its Label input.
  * Borders default to 0; edit on the card slider, in Full screen, or Suggest borders.
+ * Border values live on ``session.leaves[].shrink`` (store); sliders call
+ * ``scheduleShrink`` so main canvas, thumbs, and fullscreen share one source.
  */
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../state/store'
@@ -11,14 +13,15 @@ import { LeafFullscreen } from './LeafFullscreen'
 import { LeafThumb } from './LeafThumb'
 
 const LABEL_DEBOUNCE_MS = 300
-const BORDER_DEBOUNCE_MS = 150
 
 export function LeafRail() {
   const session = useAppStore((s) => s.session)
   const selectedDisplayIndex = useAppStore((s) => s.selectedDisplayIndex)
   const selectLeaf = useAppStore((s) => s.selectLeaf)
   const setLeafLabel = useAppStore((s) => s.setLeafLabel)
+  const scheduleShrink = useAppStore((s) => s.scheduleShrink)
   const setShrink = useAppStore((s) => s.setShrink)
+  const flushShrinks = useAppStore((s) => s.flushShrinks)
   const resuggestBorders = useAppStore((s) => s.resuggestBorders)
   const brushSize = useAppStore((s) => s.brushSize)
   const setBrushSize = useAppStore((s) => s.setBrushSize)
@@ -35,48 +38,23 @@ export function LeafRail() {
 
   const [fullscreenIndex, setFullscreenIndex] = useState<number | null>(null)
   const [draftLabels, setDraftLabels] = useState<Record<number, string>>({})
-  const [draftShrinks, setDraftShrinks] = useState<Record<number, number>>({})
   const labelTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
-  const shrinkTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
   const labelInputRefs = useRef<Record<number, HTMLInputElement | null>>({})
   const cardRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
-  // Reset drafts only when the sample changes — not on every leaves reference churn.
+  // Reset label drafts only when the sample changes.
   useEffect(() => {
     const nextLabels: Record<number, string> = {}
-    const nextShrinks: Record<number, number> = {}
     for (const leaf of session?.leaves ?? []) {
       nextLabels[leaf.displayIndex] = leaf.label
-      nextShrinks[leaf.displayIndex] = Math.max(0, leaf.shrink ?? 0)
     }
     setDraftLabels(nextLabels)
-    setDraftShrinks(nextShrinks)
   }, [session?.sampleKey])
 
-  // Keep shrink drafts in sync when Suggest borders (or server) updates shrink values.
-  useEffect(() => {
-    if (!session?.leaves) return
-    setDraftShrinks((prev) => {
-      const next = { ...prev }
-      let changed = false
-      for (const leaf of session.leaves) {
-        const pending = shrinkTimers.current[leaf.displayIndex]
-        if (pending) continue // user is mid-drag
-        if (next[leaf.displayIndex] !== leaf.shrink) {
-          next[leaf.displayIndex] = Math.max(0, leaf.shrink ?? 0)
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-  }, [session?.leaves])
-
-  // Drop pending label/border API calls when switching samples.
+  // Drop pending label API calls when switching samples.
   useEffect(() => {
     for (const t of Object.values(labelTimers.current)) clearTimeout(t)
-    for (const t of Object.values(shrinkTimers.current)) clearTimeout(t)
     labelTimers.current = {}
-    shrinkTimers.current = {}
   }, [session?.sampleKey])
 
   // Close fullscreen editor when the sample changes so crop/mask state cannot leak.
@@ -86,10 +64,8 @@ export function LeafRail() {
 
   useEffect(() => {
     const labelTs = labelTimers.current
-    const shrinkTs = shrinkTimers.current
     return () => {
       for (const t of Object.values(labelTs)) clearTimeout(t)
-      for (const t of Object.values(shrinkTs)) clearTimeout(t)
     }
   }, [])
 
@@ -120,23 +96,12 @@ export function LeafRail() {
     }, LABEL_DEBOUNCE_MS)
   }
 
-  const scheduleShrink = (displayIndex: number, value: number) => {
-    const next = Math.max(0, Math.min(50, Math.round(value)))
-    setDraftShrinks((prev) => ({ ...prev, [displayIndex]: next }))
+  const openFullscreen = async (displayIndex: number) => {
     selectLeaf(displayIndex)
-    // Live preview on main canvas / thumbs before the debounced API write.
-    const cur = useAppStore.getState().session
-    if (cur?.leaves[displayIndex]) {
-      const leaves = cur.leaves.map((l) =>
-        l.displayIndex === displayIndex ? { ...l, shrink: next } : l,
-      )
-      useAppStore.setState({ session: { ...cur, leaves } })
-    }
-    const prev = shrinkTimers.current[displayIndex]
-    if (prev) clearTimeout(prev)
-    shrinkTimers.current[displayIndex] = setTimeout(() => {
-      void setShrink(displayIndex, next)
-    }, BORDER_DEBOUNCE_MS)
+    // Commit any in-progress rail border write before the editor opens so
+    // fullscreen / main / thumbs all see the same shrink value.
+    await flushShrinks()
+    setFullscreenIndex(displayIndex)
   }
 
   const focusLeafLabel = (displayIndex: number) => {
@@ -167,7 +132,7 @@ export function LeafRail() {
     if ((e.shiftKey && pos <= 0) || (!e.shiftKey && pos >= order.length - 1)) {
       return
     }
-    
+
     const nextPos = e.shiftKey
       ? (pos - 1 + order.length) % order.length
       : (pos + 1) % order.length
@@ -224,7 +189,7 @@ export function LeafRail() {
                   maskIndex={leaf.maskIndex}
                   displayIndex={leaf.displayIndex}
                   size={220}
-                  shrink={draftShrinks[leaf.displayIndex] ?? leaf.shrink}
+                  shrink={leaf.shrink}
                 />
               </button>
               <div className="leaf-meta">
@@ -259,23 +224,30 @@ export function LeafRail() {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <span>
-                    Border <strong>{draftShrinks[leaf.displayIndex] ?? leaf.shrink}</strong>{' '}
-                    px
+                    Border <strong>{leaf.shrink}</strong> px
                   </span>
                   <input
                     type="range"
                     tabIndex={-1}
                     min={0}
                     max={50}
-                    value={draftShrinks[leaf.displayIndex] ?? leaf.shrink}
+                    value={leaf.shrink}
                     disabled={busy}
                     onFocus={() => selectLeaf(leaf.displayIndex)}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      selectLeaf(leaf.displayIndex)
                       scheduleShrink(leaf.displayIndex, Number(e.target.value))
-                    }
+                    }}
                     onPointerUp={() => {
-                      const v = draftShrinks[leaf.displayIndex] ?? leaf.shrink
-                      void setShrink(leaf.displayIndex, v)
+                      const live = useAppStore
+                        .getState()
+                        .session?.leaves.find(
+                          (l) => l.displayIndex === leaf.displayIndex,
+                        )
+                      void setShrink(
+                        leaf.displayIndex,
+                        live?.shrink ?? leaf.shrink,
+                      )
                     }}
                   />
                 </label>
@@ -285,10 +257,7 @@ export function LeafRail() {
                 className="btn full leaf-fullscreen-btn"
                 tabIndex={-1}
                 disabled={busy}
-                onClick={() => {
-                  selectLeaf(leaf.displayIndex)
-                  setFullscreenIndex(leaf.displayIndex)
-                }}
+                onClick={() => void openFullscreen(leaf.displayIndex)}
               >
                 Full screen / edit
               </button>

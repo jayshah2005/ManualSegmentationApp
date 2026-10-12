@@ -32,4 +32,4 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
-SAM-2 = { path = "../sam2", editable = true }
+SAM-2 = { path = "third_party/sam2", editable = true }

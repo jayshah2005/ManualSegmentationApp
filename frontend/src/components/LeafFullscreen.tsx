@@ -28,7 +28,9 @@ type Props = {
 export function LeafFullscreen({ displayIndex, onClose }: Props) {
   const session = useAppStore((s) => s.session)
   const busy = useAppStore((s) => s.busy)
+  const scheduleShrink = useAppStore((s) => s.scheduleShrink)
   const setShrink = useAppStore((s) => s.setShrink)
+  const flushShrinks = useAppStore((s) => s.flushShrinks)
   const setLeafLabel = useAppStore((s) => s.setLeafLabel)
   const syncMasksToServer = useAppStore((s) => s.syncMasksToServer)
   const setError = useAppStore((s) => s.setError)
@@ -38,6 +40,7 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
   const localMasks = useAppStore((s) => s.localMasks)
   const samMasks = useAppStore((s) => s.samMasks)
   const brushKeeps = useAppStore((s) => s.brushKeeps)
+  const maskRevisions = useAppStore((s) => s.maskRevisions)
   const rgbCacheKey = useAppStore((s) => s.rgbCacheKey)
   const selectLeaf = useAppStore((s) => s.selectLeaf)
   const maskOverlayColor = useAppStore((s) => s.maskOverlayColor)
@@ -48,6 +51,8 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
   const samMask = leaf ? samMasks[leaf.maskIndex] : null
   const brushKeep = leaf ? brushKeeps[leaf.maskIndex] : null
   const stack = leaf ? undoStacks[leaf.maskIndex] : null
+  const shrink = leaf?.shrink ?? 0
+  const maskRev = leaf ? (maskRevisions[leaf.maskIndex] ?? 0) : 0
 
   const {
     cursor,
@@ -78,11 +83,9 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
   /** Ctrl (Win/Linux) or Cmd (macOS) held — drag pans like space. */
   const modPanRef = useRef(false)
 
-  const [shrink, setLocalShrink] = useState(leaf?.shrink ?? 0)
   const [leafLabel, setLocalLabel] = useState(leaf?.label ?? '')
   const [zoomLabel, setZoomLabel] = useState(100)
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 })
-  const shrinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const labelTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const setDraftLeafLabel = useAppStore((s) => s.setDraftLeafLabel)
 
@@ -91,13 +94,11 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
   }, [displayIndex, selectLeaf])
 
   useEffect(() => {
-    setLocalShrink(leaf?.shrink ?? 0)
     setLocalLabel(leaf?.label ?? '')
-  }, [leaf?.shrink, leaf?.label, displayIndex])
+  }, [leaf?.label, displayIndex])
 
   useEffect(() => {
     return () => {
-      if (shrinkTimer.current) clearTimeout(shrinkTimer.current)
       if (labelTimer.current) clearTimeout(labelTimer.current)
     }
   }, [])
@@ -325,7 +326,7 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
 
   useEffect(() => {
     redraw()
-  }, [redraw, localMasks, samMasks, brushKeeps, shrink])
+  }, [redraw, localMasks, samMasks, brushKeeps, shrink, maskRev])
 
   // Native wheel: zoom in toward cursor; zoom out toward center / default view
   useEffect(() => {
@@ -346,16 +347,14 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
 
   const syncAndClose = useCallback(async () => {
     try {
-      if (shrinkTimer.current) {
-        clearTimeout(shrinkTimer.current)
-        shrinkTimer.current = null
-        await setShrink(displayIndex, shrink)
-      }
       if (labelTimer.current) {
         clearTimeout(labelTimer.current)
         labelTimer.current = null
         await setLeafLabel(displayIndex, leafLabel)
       }
+      // Flush border writes first so a concurrent mask push cannot observe
+      // stale server shrinks, then push brush edits without clobbering meta.
+      await flushShrinks()
       await syncMasksToServer()
     } catch (e) {
       setError(String(e))
@@ -363,12 +362,11 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
     onClose()
   }, [
     syncMasksToServer,
+    flushShrinks,
     setError,
     onClose,
-    setShrink,
     setLeafLabel,
     displayIndex,
-    shrink,
     leafLabel,
   ])
 
@@ -578,20 +576,7 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
   }
 
   const applyShrink = (value: number) => {
-    const next = Math.max(0, Math.min(50, Math.round(value)))
-    setLocalShrink(next)
-    // Optimistic session patch so main canvas + rail update immediately.
-    const cur = useAppStore.getState().session
-    if (cur?.leaves[displayIndex]) {
-      const leaves = cur.leaves.map((l) =>
-        l.displayIndex === displayIndex ? { ...l, shrink: next } : l,
-      )
-      useAppStore.setState({ session: { ...cur, leaves } })
-    }
-    if (shrinkTimer.current) clearTimeout(shrinkTimer.current)
-    shrinkTimer.current = setTimeout(() => {
-      void setShrink(displayIndex, next)
-    }, 150)
+    scheduleShrink(displayIndex, value)
   }
 
   const applyLabel = (value: string) => {
@@ -752,11 +737,8 @@ export function LeafFullscreen({ displayIndex, onClose }: Props) {
               disabled={busy}
               onChange={(e) => applyShrink(Number(e.target.value))}
               onPointerUp={() => {
-                if (shrinkTimer.current) {
-                  clearTimeout(shrinkTimer.current)
-                  shrinkTimer.current = null
-                }
-                void setShrink(displayIndex, shrink)
+                const live = useAppStore.getState().session?.leaves[displayIndex]
+                void setShrink(displayIndex, live?.shrink ?? shrink)
               }}
             />
           </label>

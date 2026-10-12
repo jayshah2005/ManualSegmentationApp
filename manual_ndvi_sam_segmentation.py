@@ -26,7 +26,7 @@ from urllib.parse import quote
 # ==========================================
 # Paths & System Initialization
 # ==========================================
-SAM2_DIR = Path("/home/jay/Desktop/CODE/sam2/")
+SAM2_DIR = Path(__file__).resolve().parent / "third_party" / "sam2"
 sys.path.append(str(SAM2_DIR))
 
 from sam2.build_sam import build_sam2
