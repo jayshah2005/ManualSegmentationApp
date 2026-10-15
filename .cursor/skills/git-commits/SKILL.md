@@ -33,6 +33,12 @@ Only commit / push / create branches when the user explicitly asks. Never commit
 | `tests` | Jest / test files |
 | `agents` | `.cursor/agents`, `.cursor/skills`, `.cursor/rules` |
 | `gitignore` | `.gitignore` |
+| `settings` | Persisted settings and the settings modal |
+| `loader` | Image/cube loaders and folder discovery |
+| `setup` | First-run wizard, GPU check, SAM install |
+| `canvas` | Segmentation canvas and prompt tools |
+| `launcher` | `start.sh` / `start.bat` and run scripts |
+| `fs` | Server-side folder browser |
 
 Need a new scope? Ask first, then add it here.
 
