@@ -20,6 +20,7 @@ import numpy as np
 from backend.pipeline.discover import Sample
 from backend.pipeline.loaders import ImageSource
 from backend.pipeline.sam import Box, Point
+from backend.settings import OrientationSettings
 
 
 @dataclass
@@ -46,6 +47,9 @@ class Session:
     rgb_image: np.ndarray | None = None  # uint8 (H, W, 3) shown on canvas + fed to SAM
     bands_used: list[int] = field(default_factory=list)
     image_token: str = ""  # changes whenever the displayed image changes
+    # Orientation the canvas was built with; export must use the same one even if
+    # the user changes the setting while this image is open.
+    orientation: OrientationSettings = field(default_factory=OrientationSettings)
     objects: list[ObjectState] = field(default_factory=list)
     next_id: int = 1
 
@@ -75,8 +79,16 @@ class Session:
     def find(self, object_id: int) -> ObjectState | None:
         return next((o for o in self.objects if o.id == object_id), None)
 
-    def start(self, sample: Sample, source: ImageSource, rgb: np.ndarray, bands: list[int]) -> None:
+    def start(
+        self,
+        sample: Sample,
+        source: ImageSource,
+        rgb: np.ndarray,
+        bands: list[int],
+        orientation: OrientationSettings,
+    ) -> None:
         self.sample, self.source = sample, source
+        self.orientation = orientation
         self.rgb_image, self.bands_used = rgb, bands
         self.image_token = uuid.uuid4().hex
         self.objects, self.next_id = [], 1

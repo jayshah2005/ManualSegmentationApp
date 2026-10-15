@@ -116,3 +116,13 @@ def test_engine_missing_returns_503(tmp_path, monkeypatch):
         r = c.post("/api/session/objects", json={"points": [{"x": 5, "y": 5}]})
         assert r.status_code == 503 and r.json()["code"] == "checkpoint_missing"
         assert c.get("/api/session").json()["objects"] == []
+
+
+def test_orientation_change_after_open_does_not_corrupt_export(client):
+    _, out = client.dirs
+    client.post("/api/session/load", json={"sampleKey": "one.png"})  # 80 wide x 60 high
+    client.post("/api/session/objects", json={"points": [{"x": 20, "y": 20}]})
+    client.put("/api/settings", json={"orientation": {"rotate": 90}})  # user rotates afterwards
+    assert client.post("/api/session/save", json={}).status_code == 200
+    png = cv2.imread(str(out / "one" / "object_001.png"), cv2.IMREAD_UNCHANGED)
+    assert png.shape[:2] == (20, 20) and (png[:, :, 3] == 255).all()  # still the original square

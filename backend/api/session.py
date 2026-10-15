@@ -51,7 +51,7 @@ def load_session(
     except (LoadError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     with mgr.locked() as session:
-        session.start(sample, source, rgb, bands)
+        session.start(sample, source, rgb, bands, settings.orientation)
         return common.session_response(session, settings)
 
 
@@ -249,14 +249,14 @@ def save_session(
         try:
             records = export_mod.export_objects(
                 source=session.source, display_rgb=session.rgb_image,
-                orientation=settings.orientation, cfg=settings.export,
+                orientation=session.orientation, cfg=settings.export,
                 jobs=jobs, out_dir=out_dir, image_name=session.sample.name,
             )
             progress = progress_mod.load_progress(settings.outputDir)
             status = "Completed" if body.complete else "Incomplete"
             progress[session.sample_key] = {"status": status, "count": len(records)}
             progress_mod.save_progress(settings.outputDir, progress)
-        except (OSError, RuntimeError, LoadError) as exc:
+        except (OSError, RuntimeError, ValueError, LoadError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         nxt = None
