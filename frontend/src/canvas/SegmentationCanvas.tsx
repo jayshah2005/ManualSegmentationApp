@@ -1,85 +1,191 @@
 /**
- * Main image canvas: RGB + mask overlays + seed markers + centroids.
+ * The image canvas: picture + object overlays + prompts + tools.
  *
- * Tool modes (from TopBar / store.toolMode):
- * - seeds  — click empty → add seed; click green dot → remove; SAM re-runs
- * - select — click near a centroid (or inside a mask) to pick that leaf
- * - brush  — paint the selected leaf; hover shows live brush circle
+ * Used twice: as the main view (whole image) and inside the focused object
+ * editor (`region` locked around one object, everything else dimmed).
  *
- * Coordinates: pointer CSS px → `displayToImage` → integer image pixels.
- * Masks are full-resolution `Uint8Array` (0/255) from the store.
+ * Tools (from the editor store):
+ * - point  — click = include, right-click / Shift+click = exclude. Refines the
+ *            active object, or creates a new one when none is active.
+ * - box    — drag a rectangle (same active/new rule)
+ * - select — click an object to make it active
+ * - brush  — paint the active object (A = add, D = erase)
+ *
+ * Zoom: mouse wheel. Pan: Space+drag, middle-drag, Ctrl/Cmd+drag.
+ * Heavy per-object bitmaps are cached and only rebuilt for the object that changed.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { rgbUrl } from '../api/client'
-import { hexToRgb } from './brush'
-import {
-  clampImagePoint,
-  clampImagePointFloat,
-  displayToImage,
-  fitImage,
-  imageToDisplay,
-  type FitRect,
-} from './coords'
-import { isKeptAfterShrinkPreservingEdits } from './maskRegion'
-import { useBrushEditor } from '../hooks/useBrushEditor'
-import { useAppStore } from '../state/store'
+import { useViewport, computeTransform, type Region } from '../hooks/useViewport'
+import { useEditor, type EditObject } from '../state/editor'
+import { useWorkspace } from '../state/workspace'
+import { brushRadius, stampLine } from './brush'
+import { cutoutFor, overlayFor, resetCanvasCaches } from './bitmaps'
+import { objectColor } from './colors'
+import { visibleMask } from './visible'
 
-const SEED_HIT = 22
+const POINT_HIT_PX = 10
+const MIN_BOX_PX = 5
 
 type Props = {
+  /** Lock the view to this region of the image (focused editor). */
+  region?: Region
+  /** Dim everything except this object (focused editor). */
+  focusId?: number | null
   className?: string
+  /** Called with the viewport controls so a parent can render zoom buttons. */
+  onViewport?: (api: ViewportApi) => void
 }
 
-export function SegmentationCanvas({ className }: Props) {
+export type ViewportApi = { zoomPct: number; zoomIn: () => void; zoomOut: () => void; reset: () => void }
+
+export function SegmentationCanvas({ region: regionProp, focusId = null, className, onViewport }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const rgbRef = useRef<HTMLImageElement | null>(null)
-  const fitRef = useRef<FitRect>({
-    offsetX: 0,
-    offsetY: 0,
-    drawW: 0,
-    drawH: 0,
-    scale: 1,
-  })
+  const imgRef = useRef<HTMLImageElement | null>(null)
+  const cursorRef = useRef<{ x: number; y: number } | null>(null)
+  const dragRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  const panRef = useRef<{ x: number; y: number } | null>(null)
+  const paintingRef = useRef(false)
+  const lastPtRef = useRef<{ x: number; y: number } | null>(null)
+  const spaceRef = useRef(false)
+  const rafRef = useRef(0)
   const [size, setSize] = useState({ w: 0, h: 0 })
 
-  const session = useAppStore((s) => s.session)
-  const rgbCacheKey = useAppStore((s) => s.rgbCacheKey)
-  const toolMode = useAppStore((s) => s.toolMode)
-  const selectedDisplayIndex = useAppStore((s) => s.selectedDisplayIndex)
-  const localMasks = useAppStore((s) => s.localMasks)
-  const samMasks = useAppStore((s) => s.samMasks)
-  const brushKeeps = useAppStore((s) => s.brushKeeps)
-  const maskRevisions = useAppStore((s) => s.maskRevisions)
-  const showPreview = useAppStore((s) => s.showPreview)
-  const maskOverlayColor = useAppStore((s) => s.maskOverlayColor)
-  const maskOverlayOpacity = useAppStore((s) => s.maskOverlayOpacity)
-  const viewExposure = useAppStore((s) => s.viewExposure)
-  const busy = useAppStore((s) => s.busy)
-  const loading = useAppStore((s) => s.loading)
-  const setSeeds = useAppStore((s) => s.setSeeds)
-  const selectLeaf = useAppStore((s) => s.selectLeaf)
-  const leafEditorOpen = useAppStore((s) => s.leafEditorOpen)
-  const blocked = busy || loading
+  const image = useEditor((s) => s.image)
+  const objects = useEditor((s) => s.objects)
+  const revs = useEditor((s) => s.revs)
+  const activeId = useEditor((s) => s.activeId)
+  const tool = useEditor((s) => s.tool)
+  const brushMode = useEditor((s) => s.brushMode)
+  const brushSize = useEditor((s) => s.brushSize)
+  const emphasize = useEditor((s) => s.emphasize)
+  const rgbKey = useEditor((s) => s.rgbKey)
+  const busy = useEditor((s) => s.busy)
+  const loading = useEditor((s) => s.loading)
+  const appearance = useWorkspace((s) => s.appearance)
 
-  const {
-    cursor,
-    setCursor,
-    paintingRef,
-    brushMode,
-    brushSize,
-    setBrushSize,
-    startStroke,
-    continueStroke,
-    endStroke,
-    drawBrushCursor,
-  } = useBrushEditor({ bindKeys: !leafEditorOpen })
+  const imgW = image?.width ?? 0
+  const imgH = image?.height ?? 0
+  const region = useMemo<Region>(
+    () => regionProp ?? { x0: 0, y0: 0, w: Math.max(1, imgW), h: Math.max(1, imgH) },
+    [regionProp, imgW, imgH],
+  )
 
-  // Keep latest cursor in a ref so mask overlays are not rebuilt on every mousemove.
-  const cursorRef = useRef(cursor)
-  cursorRef.current = cursor
+  // ---- drawing ----
 
-  // Resize observer
+  const drawRef = useRef<() => void>(() => undefined)
+  const schedule = useCallback(() => {
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(() => drawRef.current())
+  }, [])
+  const { viewRef, zoomPct, reset, panBy, zoomAt } = useViewport(schedule)
+
+  const draw = useCallback(() => {
+    rafRef.current = 0
+    const canvas = canvasRef.current
+    if (!canvas || size.w <= 0 || size.h <= 0) return
+    const dpr = window.devicePixelRatio || 1
+    if (canvas.width !== Math.floor(size.w * dpr) || canvas.height !== Math.floor(size.h * dpr)) {
+      canvas.width = Math.floor(size.w * dpr)
+      canvas.height = Math.floor(size.h * dpr)
+      canvas.style.width = `${size.w}px`
+      canvas.style.height = `${size.h}px`
+    }
+    const ctx = canvas.getContext('2d')!
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.fillStyle = focusId != null ? '#07090c' : '#14171c'
+    ctx.fillRect(0, 0, size.w, size.h)
+
+    const ed = useEditor.getState()
+    const img = imgRef.current
+    if (!ed.image || !img) return
+    const ap = useWorkspace.getState().appearance
+    const t = computeTransform(region, size.w, size.h, viewRef.current)
+    const dw = region.w * t.scale
+    const dh = region.h * t.scale
+    const exposure = ap.exposure !== 1 ? `brightness(${ap.exposure})` : 'none'
+
+    // picture (dimmed when a single object is focused)
+    ctx.imageSmoothingEnabled = t.scale < 1
+    ctx.filter = exposure
+    ctx.globalAlpha = focusId != null ? 0.22 : 1
+    ctx.drawImage(img, region.x0, region.y0, region.w, region.h, t.ox, t.oy, dw, dh)
+    ctx.globalAlpha = 1
+    ctx.filter = 'none'
+    ctx.imageSmoothingEnabled = false
+
+    const list = ed.objects
+    if (focusId != null) {
+      const o = list.find((x) => x.id === focusId)
+      if (o) {
+        const cut = cutoutFor(o, ed.revs[o.id] ?? 0, ed.image.width, ed.image.height, img, ed.rgbKey)
+        if (cut) {
+          ctx.filter = exposure
+          ctx.drawImage(cut.canvas, 0, 0, cut.canvas.width, cut.canvas.height, t.ox + (cut.x0 - region.x0) * t.scale, t.oy + (cut.y0 - region.y0) * t.scale, cut.canvas.width * t.scale, cut.canvas.height * t.scale)
+          ctx.filter = 'none'
+        }
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+      ctx.lineWidth = 1
+      ctx.strokeRect(t.ox + 0.5, t.oy + 0.5, dw - 1, dh - 1)
+    } else {
+      list.forEach((o, i) => {
+        const ov = overlayFor(o, i, ed.revs[o.id] ?? 0, ed.image!.width, ed.image!.height, ap.maskColor)
+        if (!ov) return
+        const isActive = o.id === ed.activeId
+        const alpha = ed.emphasize
+          ? isActive ? Math.min(1, ap.maskOpacity * 1.35) : ap.maskOpacity * 0.3
+          : isActive ? Math.min(1, ap.maskOpacity * 1.2) : ap.maskOpacity
+        ctx.globalAlpha = alpha
+        ctx.drawImage(ov.canvas, 0, 0, ov.canvas.width, ov.canvas.height, t.ox + (ov.x0 - region.x0) * t.scale, t.oy + (ov.y0 - region.y0) * t.scale, ov.canvas.width * t.scale, ov.canvas.height * t.scale)
+      })
+      ctx.globalAlpha = 1
+      list.forEach((o, i) => drawBadge(ctx, o, i, ed.activeId === o.id, region, t, ap.maskColor))
+    }
+
+    // prompts of the active object
+    const active = list.find((o) => o.id === ed.activeId)
+    if (active && ed.tool !== 'brush') {
+      if (active.box) drawBox(ctx, active.box, region, t, '#ffffff', false)
+      for (const p of active.points) drawPoint(ctx, (p.x + 0.5 - region.x0) * t.scale + t.ox, (p.y + 0.5 - region.y0) * t.scale + t.oy, p.label === 1)
+    }
+    const drag = dragRef.current
+    if (drag) drawBox(ctx, { x0: drag.x0, y0: drag.y0, x1: drag.x1, y1: drag.y1 }, region, t, '#4eb8d9', true)
+
+    // brush cursor
+    const cur = cursorRef.current
+    if (ed.tool === 'brush' && cur) {
+      const r = brushRadius(ed.brushSize) * t.scale
+      const erase = ed.brushMode === 'erase'
+      ctx.beginPath()
+      ctx.arc(cur.x, cur.y, Math.max(1, r), 0, Math.PI * 2)
+      ctx.fillStyle = erase ? 'rgba(255,70,70,0.18)' : 'rgba(78,184,217,0.18)'
+      ctx.fill()
+      ctx.strokeStyle = erase ? 'rgba(255,70,70,0.95)' : 'rgba(78,184,217,0.95)'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+  }, [size, region, focusId, viewRef])
+
+  useEffect(() => {
+    drawRef.current = draw
+  })
+
+  useEffect(() => {
+    onViewport?.({
+      zoomPct,
+      zoomIn: () => zoomAt(size.w / 2, size.h / 2, 1.25, region, size.w, size.h),
+      zoomOut: () => zoomAt(size.w / 2, size.h / 2, 1 / 1.25, region, size.w, size.h),
+      reset,
+    })
+  }, [onViewport, zoomPct, zoomAt, reset, size, region])
+
+  // reset the view when the image or the focused region changes
+  useEffect(() => {
+    resetCanvasCaches()
+    reset()
+  }, [image?.sampleKey, regionProp, reset])
+
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
@@ -91,384 +197,335 @@ export function SegmentationCanvas({ className }: Props) {
     return () => ro.disconnect()
   }, [])
 
-  const redraw = useCallback(() => {
-    const canvas = canvasRef.current
-    if (!canvas || size.w <= 0 || size.h <= 0) return
-
-    const dpr = window.devicePixelRatio || 1
-    canvas.width = Math.floor(size.w * dpr)
-    canvas.height = Math.floor(size.h * dpr)
-    canvas.style.width = `${size.w}px`
-    canvas.style.height = `${size.h}px`
-
-    const ctx = canvas.getContext('2d')!
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, size.w, size.h)
-    ctx.fillStyle = '#1a1d21'
-    ctx.fillRect(0, 0, size.w, size.h)
-
-    const sessionNow = useAppStore.getState().session
-    if (!sessionNow) return
-
-    const fit = fitImage(sessionNow.width, sessionNow.height, size.w, size.h)
-    fitRef.current = fit
-
-    const rgb = rgbRef.current
-    if (rgb) {
-      ctx.imageSmoothingEnabled = true
-      const exposure = useAppStore.getState().viewExposure
-      if (exposure !== 1) ctx.filter = `brightness(${exposure})`
-      ctx.drawImage(rgb, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
-      if (exposure !== 1) ctx.filter = 'none'
-    }
-
-    const state = useAppStore.getState()
-    // Never paint masks from a different generation than the current RGB/session.
-    if (state.session?.sampleKey !== sessionNow.sampleKey) return
-    const masks = state.localMasks
-    const samMasks = state.samMasks
-    const brushKeeps = state.brushKeeps
-    const leaves = sessionNow.leaves
-    const sel = state.selectedDisplayIndex
-    const preview = state.showPreview
-    const [r, g, b] = hexToRgb(state.maskOverlayColor)
-    const baseOpacity = state.maskOverlayOpacity
-    const imgW = sessionNow.width
-    const imgH = sessionNow.height
-
-    // Composite at display resolution so we do not allocate full-HSI ImageData per leaf.
-    const ow = Math.max(1, Math.round(fit.drawW))
-    const oh = Math.max(1, Math.round(fit.drawH))
-    const overlay = document.createElement('canvas')
-    overlay.width = ow
-    overlay.height = oh
-    const octx = overlay.getContext('2d')!
-    const imgData = octx.createImageData(ow, oh)
-    const d = imgData.data
-
-    for (const leaf of leaves) {
-      const mask = masks[leaf.maskIndex]
-      if (!mask) continue
-      // Guard against wrong-sized buffers left over from a prior sample.
-      if (mask.length !== imgW * imgH) continue
-      const sam = samMasks[leaf.maskIndex]
-      const keep = brushKeeps[leaf.maskIndex]
-      const isSel = sel === leaf.displayIndex
-      const alpha = preview
-        ? isSel
-          ? Math.min(1, baseOpacity * 1.35)
-          : baseOpacity * 0.35
-        : isSel
-          ? Math.min(1, baseOpacity * 1.15)
-          : baseOpacity
-      const a = Math.round(255 * alpha)
-      const rShrink = Math.max(0, leaf.shrink)
-      for (let py = 0; py < oh; py++) {
-        const iy = Math.min(imgH - 1, Math.floor((py / oh) * imgH))
-        const row = iy * imgW
-        for (let px = 0; px < ow; px++) {
-          const ix = Math.min(imgW - 1, Math.floor((px / ow) * imgW))
-          if (mask[row + ix] === 0) continue
-          // Pixels the border would remove: leave transparent so RGB shows through
-          // (no dark fringe outline — erased/edge areas blend with the environment).
-          if (
-            !isKeptAfterShrinkPreservingEdits(
-              mask,
-              sam,
-              ix,
-              iy,
-              imgW,
-              imgH,
-              rShrink,
-              keep,
-            )
-          ) {
-            continue
-          }
-          const o = (py * ow + px) * 4
-          d[o] = r
-          d[o + 1] = g
-          d[o + 2] = b
-          d[o + 3] = a
-        }
-      }
-    }
-    octx.putImageData(imgData, 0, 0)
-    ctx.imageSmoothingEnabled = false
-    ctx.drawImage(overlay, fit.offsetX, fit.offsetY, fit.drawW, fit.drawH)
-
-    for (const leaf of leaves) {
-      const isSel = sel === leaf.displayIndex
-      const c = imageToDisplay(leaf.centroid.x, leaf.centroid.y, fit)
-      ctx.beginPath()
-      ctx.arc(c.x, c.y, isSel ? 7 : 5, 0, Math.PI * 2)
-      ctx.fillStyle = '#fff'
-      ctx.fill()
-      ctx.strokeStyle = `rgb(${r},${g},${b})`
-      ctx.lineWidth = 2
-      ctx.stroke()
-      if (leaf.label) {
-        ctx.font = '600 13px "IBM Plex Sans", system-ui, sans-serif'
-        ctx.fillStyle = '#fff'
-        ctx.strokeStyle = 'rgba(0,0,0,0.55)'
-        ctx.lineWidth = 3
-        ctx.strokeText(leaf.label, c.x + 10, c.y + 4)
-        ctx.fillText(leaf.label, c.x + 10, c.y + 4)
-      }
-    }
-
-    // Seeds
-    for (const seed of sessionNow.seeds) {
-      const p = imageToDisplay(seed.x, seed.y, fit)
-      ctx.beginPath()
-      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(0, 220, 90, 0.9)'
-      ctx.fill()
-      ctx.strokeStyle = '#fff'
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
-
-    // Brush cursor circle (read from ref — do not depend on cursor state here)
-    if (state.toolMode === 'brush') {
-      drawBrushCursor(
-        ctx,
-        cursorRef.current,
-        fit.scale,
-        state.brushMode,
-        state.brushSize,
-      )
-    }
-  }, [size, drawBrushCursor])
-
-  // Load RGB image when session changes; cancel stale onloads so old JPEGs cannot paint.
+  // load the display picture
   useEffect(() => {
-    if (!session) {
-      rgbRef.current = null
-      redraw()
+    if (!image) {
+      imgRef.current = null
+      schedule()
       return
     }
-    const sampleKey = session.sampleKey
+    const key = image.sampleKey
     let cancelled = false
-    const img = new Image()
-    img.decoding = 'async'
-    img.src = rgbUrl(sampleKey, rgbCacheKey)
-    img.onload = () => {
-      if (cancelled) return
-      if (useAppStore.getState().session?.sampleKey !== sampleKey) return
-      rgbRef.current = img
-      redraw()
+    const el = new Image()
+    el.decoding = 'async'
+    el.src = rgbUrl(key, rgbKey)
+    el.onload = () => {
+      if (cancelled || useEditor.getState().image?.sampleKey !== key) return
+      imgRef.current = el
+      resetCanvasCaches()
+      schedule()
     }
     return () => {
       cancelled = true
     }
-  }, [session, rgbCacheKey, redraw])
+  }, [image?.sampleKey, rgbKey, schedule]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Redraw when masks / selection / mode change (not on every cursor move)
   useEffect(() => {
-    redraw()
-  }, [
-    redraw,
-    localMasks,
-    samMasks,
-    brushKeeps,
-    maskRevisions,
-    selectedDisplayIndex,
-    toolMode,
-    brushMode,
-    brushSize,
-    showPreview,
-    maskOverlayColor,
-    maskOverlayOpacity,
-    viewExposure,
-    session,
-    busy,
-    loading,
-  ])
+    schedule()
+  }, [schedule, size, objects, revs, activeId, tool, brushMode, brushSize, emphasize, appearance, busy, loading, focusId, region])
 
-  const pointerToDisplay = (e: React.PointerEvent) => {
-    const canvas = canvasRef.current!
-    const rect = canvas.getBoundingClientRect()
+  // wheel zoom (needs a non-passive listener to stop page scroll)
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY > 0 ? 0.9 : 1.1, region, size.w, size.h)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [zoomAt, region, size])
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === ' ' && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLButtonElement)) {
+        spaceRef.current = true
+        e.preventDefault()
+      }
+    }
+    const up = (e: KeyboardEvent) => {
+      if (e.key === ' ') spaceRef.current = false
+    }
+    const blur = () => (spaceRef.current = false)
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', blur)
+    }
+  }, [])
+
+  // ---- pointer handling ----
+
+  const posOf = (e: { clientX: number; clientY: number }) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
     return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }
+  const toImage = (d: { x: number; y: number }) => {
+    const t = computeTransform(region, size.w, size.h, viewRef.current)
+    return { x: region.x0 + (d.x - t.ox) / t.scale, y: region.y0 + (d.y - t.oy) / t.scale, scale: t.scale }
+  }
+  const inside = (p: { x: number; y: number }) => p.x >= 0 && p.y >= 0 && p.x < imgW && p.y < imgH
+
+  const objectAt = (x: number, y: number): EditObject | null => {
+    const ed = useEditor.getState()
+    const ix = Math.floor(x)
+    const iy = Math.floor(y)
+    if (!ed.image || ix < 0 || iy < 0 || ix >= imgW || iy >= imgH) return null
+    for (let i = ed.objects.length - 1; i >= 0; i--) {
+      const o = ed.objects[i]
+      if (visibleMask(o, imgW, imgH, ed.revs[o.id] ?? 0)[iy * imgW + ix] !== 0) return o
+    }
+    return null
+  }
+
+  const startStroke = (o: EditObject, x: number, y: number) => {
+    const ed = useEditor.getState()
+    ed.beginStroke(o.id)
+    paintingRef.current = true
+    lastPtRef.current = { x, y }
+    stampLine(o.mask, imgW, imgH, x, y, x, y, ed.brushSize, ed.brushMode, o.keep)
+    ed.touchMask(o.id)
   }
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (!session || blocked) return
+    if (!image || loading) return
     const canvas = canvasRef.current!
     canvas.setPointerCapture(e.pointerId)
-    const d = pointerToDisplay(e)
-    setCursor(d)
-    const fit = fitRef.current
-    const imgPt = displayToImage(d.x, d.y, fit)
-    if (!imgPt) return
-    if (
-      imgPt.x < 0 ||
-      imgPt.y < 0 ||
-      imgPt.x >= session.width ||
-      imgPt.y >= session.height
-    )
-      return
-    const clamped = clampImagePoint(imgPt.x, imgPt.y, session.width, session.height)
+    const d = posOf(e)
+    cursorRef.current = d
+    const ed = useEditor.getState()
 
-    if (toolMode === 'seeds') {
-      const seeds = [...session.seeds]
-      const hit = seeds.findIndex(
-        (s) => Math.hypot(s.x - clamped.x, s.y - clamped.y) <= SEED_HIT,
-      )
-      if (hit >= 0) seeds.splice(hit, 1)
-      else seeds.push(clamped)
-      void setSeeds(seeds)
+    const wantsPan = e.button === 1 || spaceRef.current || e.ctrlKey || e.metaKey || (e.button === 2 && (ed.tool === 'brush' || ed.tool === 'select'))
+    if (wantsPan) {
+      panRef.current = d
       return
     }
+    const p = toImage(d)
+    const activeObj = ed.objects.find((o) => o.id === ed.activeId) ?? null
 
-    if (toolMode === 'select') {
-      // Prefer a nearby centroid; fall back to mask hit under the click.
-      let best: number | null = null
-      let bestD = Infinity
-      for (const leaf of session.leaves) {
-        const dist = Math.hypot(
-          leaf.centroid.x - clamped.x,
-          leaf.centroid.y - clamped.y,
-        )
-        if (dist < bestD) {
-          bestD = dist
-          best = leaf.displayIndex
-        }
-      }
-      // Generous hit radius so clicking the painted centroid / label works.
-      if (best != null && bestD < 120) {
-        selectLeaf(best)
-        return
-      }
-      for (const leaf of session.leaves) {
-        const mask = localMasks[leaf.maskIndex]
-        if (
-          mask &&
-          mask[clamped.y * session.width + clamped.x] === 255
-        ) {
-          selectLeaf(leaf.displayIndex)
+    if (focusId != null && ed.tool !== 'brush') return
+
+    if (ed.tool === 'point') {
+      if (busy || !inside(p)) return
+      if (activeObj) {
+        const hit = activeObj.points.findIndex((q) => Math.hypot((q.x + 0.5 - p.x) * p.scale, (q.y + 0.5 - p.y) * p.scale) <= POINT_HIT_PX)
+        if (hit >= 0) {
+          void ed.removePoint(hit)
           return
         }
       }
+      const other = objectAt(p.x, p.y)
+      if (other && other.id !== ed.activeId) {
+        ed.select(other.id)
+        return
+      }
+      const exclude = e.button === 2 || e.shiftKey
+      void ed.placePrompt({ point: { x: Math.floor(p.x), y: Math.floor(p.y), label: exclude ? 0 : 1 } })
       return
     }
 
-    if (toolMode === 'brush') {
-      const sel = selectedDisplayIndex
-      if (sel == null) return
-      const leaf = session.leaves[sel]
-      if (!leaf) return
-      const mask = localMasks[leaf.maskIndex]
-      if (!mask) return
-      const pt = clampImagePointFloat(
-        imgPt.x,
-        imgPt.y,
-        session.width,
-        session.height,
-      )
-      startStroke(
-        leaf.maskIndex,
-        mask,
-        session.width,
-        session.height,
-        pt.x,
-        pt.y,
-      )
-      redraw()
+    if (ed.tool === 'box') {
+      if (busy || !inside(p)) return
+      dragRef.current = { x0: p.x, y0: p.y, x1: p.x, y1: p.y }
+      return
+    }
+
+    if (ed.tool === 'select') {
+      const hit = objectAt(p.x, p.y)
+      if (hit) ed.select(hit.id)
+      else {
+        let best: EditObject | null = null
+        let bestD = 36 / p.scale
+        for (const o of ed.objects) {
+          if (!o.centroid) continue
+          const dist = Math.hypot(o.centroid.x - p.x, o.centroid.y - p.y)
+          if (dist < bestD) {
+            bestD = dist
+            best = o
+          }
+        }
+        ed.select(best ? best.id : null)
+      }
+      return
+    }
+
+    if (ed.tool === 'brush') {
+      let target = activeObj
+      if (!target) {
+        target = objectAt(p.x, p.y)
+        if (!target) {
+          useWorkspace.getState().toast('info', 'Pick an object first (Select tool), then paint on it.')
+          return
+        }
+        ed.select(target.id)
+      }
+      const x = Math.max(0, Math.min(imgW - 1e-4, p.x))
+      const y = Math.max(0, Math.min(imgH - 1e-4, p.y))
+      startStroke(target, x, y)
     }
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
-    if (blocked) return
-    const d = pointerToDisplay(e)
+    const d = posOf(e)
     cursorRef.current = d
-    setCursor(d)
-    // Brush cursor: cheap full redraw at display-res is OK; skip when not brushing.
-    if (toolMode === 'brush' && !paintingRef.current) {
-      redraw()
+    if (panRef.current) {
+      panBy(d.x - panRef.current.x, d.y - panRef.current.y)
+      panRef.current = d
+      return
     }
-    if (!paintingRef.current || !session || toolMode !== 'brush') return
-    const sel = selectedDisplayIndex
-    if (sel == null) return
-    const leaf = session.leaves[sel]
-    const mask = localMasks[leaf.maskIndex]
-    if (!mask) return
-    const fit = fitRef.current
-    const paintPoints: { x: number; y: number }[] = []
-    const native = e.nativeEvent as PointerEvent
-    const coalesced =
-      typeof native.getCoalescedEvents === 'function'
-        ? native.getCoalescedEvents()
-        : []
-    const events = coalesced.length > 0 ? coalesced : [native]
-    const canvas = canvasRef.current!
-    const rect = canvas.getBoundingClientRect()
-    for (const ev of events) {
-      const dx = ev.clientX - rect.left
-      const dy = ev.clientY - rect.top
-      const imgPt = displayToImage(dx, dy, fit)
-      if (!imgPt) continue
-      paintPoints.push(
-        clampImagePointFloat(imgPt.x, imgPt.y, session.width, session.height),
-      )
+    const ed = useEditor.getState()
+    if (dragRef.current) {
+      const p = toImage(d)
+      dragRef.current = { ...dragRef.current, x1: Math.max(0, Math.min(imgW - 1, p.x)), y1: Math.max(0, Math.min(imgH - 1, p.y)) }
+      schedule()
+      return
     }
-    for (const pt of paintPoints) {
-      continueStroke(
-        leaf.maskIndex,
-        mask,
-        session.width,
-        session.height,
-        pt.x,
-        pt.y,
-      )
+    if (paintingRef.current && ed.tool === 'brush') {
+      const o = ed.objects.find((x) => x.id === ed.activeId)
+      if (!o) return
+      const native = e.nativeEvent
+      const events = typeof native.getCoalescedEvents === 'function' && native.getCoalescedEvents().length ? native.getCoalescedEvents() : [native]
+      for (const ev of events) {
+        const p = toImage(posOf(ev))
+        const x = Math.max(0, Math.min(imgW - 1e-4, p.x))
+        const y = Math.max(0, Math.min(imgH - 1e-4, p.y))
+        const last = lastPtRef.current ?? { x, y }
+        stampLine(o.mask, imgW, imgH, last.x, last.y, x, y, ed.brushSize, ed.brushMode, o.keep)
+        lastPtRef.current = { x, y }
+      }
+      ed.touchMask(o.id)
+      return
     }
-    if (paintPoints.length) redraw()
+    if (ed.tool === 'brush') schedule()
   }
 
   const onPointerUp = (e: React.PointerEvent) => {
-    endStroke()
+    panRef.current = null
+    paintingRef.current = false
+    lastPtRef.current = null
+    const drag = dragRef.current
+    dragRef.current = null
     try {
       canvasRef.current?.releasePointerCapture(e.pointerId)
     } catch {
-      /* ignore */
+      /* already released */
     }
+    if (drag) {
+      const t = computeTransform(region, size.w, size.h, viewRef.current)
+      const w = Math.abs(drag.x1 - drag.x0) * t.scale
+      const h = Math.abs(drag.y1 - drag.y0) * t.scale
+      if (w >= MIN_BOX_PX && h >= MIN_BOX_PX) {
+        void useEditor.getState().placePrompt({
+          box: { x0: Math.round(Math.min(drag.x0, drag.x1)), y0: Math.round(Math.min(drag.y0, drag.y1)), x1: Math.round(Math.max(drag.x0, drag.x1)), y1: Math.round(Math.max(drag.y0, drag.y1)) },
+        })
+      }
+    }
+    schedule()
   }
 
   const onPointerLeave = () => {
-    if (!paintingRef.current) setCursor(null)
+    if (!paintingRef.current) {
+      cursorRef.current = null
+      schedule()
+    }
   }
 
-  const onWheel = (e: React.WheelEvent) => {
-    if (leafEditorOpen) return
-    if (toolMode !== 'brush') return
-    e.preventDefault()
-    const delta = e.deltaY > 0 ? -2 : 2
-    setBrushSize(brushSize + delta)
-  }
-
-  const cursorStyle =
-    toolMode === 'brush' ? 'none' : toolMode === 'seeds' ? 'crosshair' : 'pointer'
+  const cursorStyle = tool === 'brush' ? 'none' : tool === 'select' ? 'pointer' : 'crosshair'
+  const active = objects.find((o) => o.id === activeId)
+  const activeNumber = active ? objects.indexOf(active) + 1 : 0
 
   return (
     <div ref={wrapRef} className={className ?? 'canvas-wrap'}>
       <canvas
         ref={canvasRef}
-        style={{ cursor: cursorStyle, touchAction: 'none', width: '100%', height: '100%' }}
+        className="main-canvas"
+        style={{ cursor: cursorStyle }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onPointerLeave={onPointerLeave}
-        onWheel={onWheel}
+        onContextMenu={(e) => e.preventDefault()}
       />
-      {!session && !blocked && (
-        <div className="canvas-empty">Load a sample to begin</div>
-      )}
-      {blocked && (
-        <div className="canvas-busy">
-          {loading ? 'Loading sample…' : 'Working…'}
+      {image && focusId == null && !loading && (
+        <div className="canvas-hint">
+          {tool === 'point' &&
+            (active
+              ? `Refining object ${activeNumber} — click to include, right-click to exclude. Press N for a new object.`
+              : 'Click on an object to outline it.')}
+          {tool === 'box' && 'Drag a box around an object.'}
+          {tool === 'select' && 'Click an object to select it.'}
+          {tool === 'brush' && (active ? `Painting object ${activeNumber} — ${brushMode === 'add' ? 'adding' : 'erasing'}.` : 'Select an object, then paint.')}
         </div>
       )}
+      {(busy || loading) && <div className="canvas-busy">{loading ? 'Opening image…' : 'Outlining…'}</div>}
     </div>
   )
+}
+
+// ---------- small draw helpers ----------
+
+type T = { ox: number; oy: number; scale: number }
+
+function drawPoint(ctx: CanvasRenderingContext2D, x: number, y: number, include: boolean) {
+  ctx.beginPath()
+  ctx.arc(x, y, 8, 0, Math.PI * 2)
+  ctx.fillStyle = include ? 'rgba(40,200,110,0.95)' : 'rgba(235,70,70,0.95)'
+  ctx.fill()
+  ctx.strokeStyle = '#fff'
+  ctx.lineWidth = 2
+  ctx.stroke()
+  ctx.strokeStyle = '#fff'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(x - 4, y)
+  ctx.lineTo(x + 4, y)
+  if (include) {
+    ctx.moveTo(x, y - 4)
+    ctx.lineTo(x, y + 4)
+  }
+  ctx.stroke()
+}
+
+function drawBox(ctx: CanvasRenderingContext2D, b: { x0: number; y0: number; x1: number; y1: number }, region: Region, t: T, color: string, dashed: boolean) {
+  const x = (Math.min(b.x0, b.x1) - region.x0) * t.scale + t.ox
+  const y = (Math.min(b.y0, b.y1) - region.y0) * t.scale + t.oy
+  const w = Math.abs(b.x1 - b.x0) * t.scale
+  const h = Math.abs(b.y1 - b.y0) * t.scale
+  ctx.save()
+  ctx.setLineDash(dashed ? [6, 4] : [])
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)'
+  ctx.lineWidth = 4
+  ctx.strokeRect(x, y, w, h)
+  ctx.strokeStyle = color
+  ctx.lineWidth = 2
+  ctx.strokeRect(x, y, w, h)
+  ctx.restore()
+}
+
+function drawBadge(ctx: CanvasRenderingContext2D, o: EditObject, index: number, isActive: boolean, region: Region, t: T, baseColor: string) {
+  if (!o.centroid) return
+  const x = (o.centroid.x - region.x0) * t.scale + t.ox
+  const y = (o.centroid.y - region.y0) * t.scale + t.oy
+  const [r, g, b] = objectColor(baseColor, index)
+  const text = o.label || String(index + 1)
+  ctx.font = '600 12px "IBM Plex Sans", system-ui, sans-serif'
+  const w = Math.max(20, ctx.measureText(text).width + 12)
+  ctx.beginPath()
+  ctx.roundRect(x - w / 2, y - 10, w, 20, 10)
+  ctx.fillStyle = isActive ? '#ffffff' : 'rgba(10,13,17,0.82)'
+  ctx.fill()
+  ctx.strokeStyle = `rgb(${r},${g},${b})`
+  ctx.lineWidth = isActive ? 3 : 2
+  ctx.stroke()
+  ctx.fillStyle = isActive ? '#10141a' : '#fff'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(text, x, y + 0.5)
+  ctx.textAlign = 'start'
+  ctx.textBaseline = 'alphabetic'
 }
