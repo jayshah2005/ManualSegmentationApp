@@ -48,6 +48,7 @@ export function EnginePanel() {
   const refreshSystem = useWorkspace((s) => s.refreshSystem)
   const saveSettings = useWorkspace((s) => s.saveSettings)
   const toast = useWorkspace((s) => s.toast)
+  const confirm = useWorkspace((s) => s.confirm)
 
   const [job, setJob] = useState<SetupJob | null>(null)
   const [log, setLog] = useState<string[]>([])
@@ -94,6 +95,21 @@ export function EnginePanel() {
     },
     [system, toast],
   )
+
+  const chooseModel = async (name: SamModel) => {
+    const m = system?.models.find((x) => x.name === name)
+    if (!m) return
+    const previous = settings?.samModel
+    await saveSettings({ samModel: name })
+    if (m.downloaded) return
+    const ok = await confirm({
+      title: `Download the ${m.label} model?`,
+      body: `It is about ${m.sizeMb} MB and is needed before you can segment with this size. It only downloads once.`,
+      okLabel: 'Download now',
+    })
+    if (ok) void run('download_model', name)
+    else if (previous && previous !== name) await saveSettings({ samModel: previous })
+  }
 
   const restart = async () => {
     try {
@@ -183,7 +199,7 @@ export function EnginePanel() {
       <div className="model-grid" role="radiogroup" aria-label="Model size">
         {system.models.map((m) => (
           <label key={m.name} className={`model-card ${selected === m.name ? 'selected' : ''}`}>
-            <input type="radio" name="sam-model" checked={selected === m.name} onChange={() => void saveSettings({ samModel: m.name })} />
+            <input type="radio" name="sam-model" checked={selected === m.name} onChange={() => void chooseModel(m.name)} />
             <strong>{m.label}</strong>
             <span className="muted">{m.note}</span>
             <span className={m.downloaded ? 'pill pill-ok' : 'pill'}>{m.downloaded ? 'Downloaded' : `${m.sizeMb} MB`}</span>

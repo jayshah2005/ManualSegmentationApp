@@ -68,6 +68,9 @@ type WorkspaceState = {
   firstPendingKey: string | null
 
   wizardOpen: boolean
+  wizardStep: number
+  /** Image the user tried to open while the engine was not ready; reopened once setup finishes. */
+  pendingOpenKey: string | null
   settingsOpen: boolean
   settingsTab: SettingsTab
   helpOpen: boolean
@@ -83,6 +86,11 @@ type WorkspaceState = {
   saveSettings: (patch: DeepPartial<Settings>) => Promise<Settings>
 
   openWizard: () => void
+  setWizardStep: (n: number) => void
+  /** True when SAM can run. Otherwise opens the setup screen at the engine step and returns false. */
+  ensureEngine: (pendingKey?: string) => boolean
+  /** Called when a request failed because the engine is missing (e.g. model file deleted). */
+  engineFailed: (message: string) => void
   closeWizard: () => void
   openSettings: (tab?: SettingsTab) => void
   closeSettings: () => void
@@ -112,6 +120,8 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   firstPendingKey: null,
 
   wizardOpen: false,
+  wizardStep: 0,
+  pendingOpenKey: null,
   settingsOpen: false,
   settingsTab: 'folders',
   helpOpen: false,
@@ -130,7 +140,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
       set({ system, systemLoading: false })
       if (settings.inputDir) await get().refreshSamples()
       const needsSetup = !settings.inputDir || !settings.outputDir || !system.ready
-      set({ booted: true, wizardOpen: needsSetup })
+      set({ booted: true, wizardOpen: needsSetup, wizardStep: settings.inputDir && settings.outputDir ? 1 : 0 })
     } catch (e) {
       set({ bootError: e instanceof Error ? e.message : String(e), systemLoading: false })
     }
@@ -176,6 +186,18 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   },
 
   openWizard: () => set({ wizardOpen: true, settingsOpen: false }),
+  setWizardStep: (wizardStep) => set({ wizardStep }),
+  ensureEngine: (pendingKey) => {
+    const { system } = get()
+    if (system?.ready) return true
+    set({ wizardOpen: true, wizardStep: 1, settingsOpen: false, pendingOpenKey: pendingKey ?? get().pendingOpenKey })
+    return false
+  },
+  engineFailed: (message) => {
+    set({ wizardOpen: true, wizardStep: 1, settingsOpen: false })
+    get().toast('info', message)
+    void get().refreshSystem()
+  },
   closeWizard: () => set({ wizardOpen: false }),
   openSettings: (tab) => set({ settingsOpen: true, settingsTab: tab ?? get().settingsTab }),
   closeSettings: () => set({ settingsOpen: false }),

@@ -77,6 +77,14 @@ export default function App() {
 
   useShortcuts()
 
+  const finishSetup = () => {
+    const ws = useWorkspace.getState()
+    const key = ws.pendingOpenKey
+    useWorkspace.setState({ pendingOpenKey: null })
+    ws.closeWizard()
+    if (key) void useEditor.getState().openSample(key, { force: true })
+  }
+
   useEffect(() => {
     void useWorkspace.getState().boot()
   }, [])
@@ -135,7 +143,7 @@ export default function App() {
       {helpOpen && <HelpDrawer />}
       {settingsOpen && <SettingsModal />}
       {editingId != null && <ObjectEditor objectId={editingId} onClose={() => setEditingId(null)} />}
-      {wizardOpen && <SetupWizard onFinish={() => useWorkspace.getState().closeWizard()} />}
+      {wizardOpen && <SetupWizard onFinish={finishSetup} />}
       <ConfirmHost />
       <Toasts />
     </div>
