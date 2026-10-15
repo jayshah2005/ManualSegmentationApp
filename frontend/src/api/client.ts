@@ -24,6 +24,7 @@ export type Settings = {
     bands: number[]
     stretchLow: number
     stretchHigh: number
+    maxSize: number
   }
   orientation: { rotate: 0 | 90 | 180 | 270; flipH: boolean; flipV: boolean; autoUpright: boolean }
   export: {
@@ -126,6 +127,8 @@ export type SessionInfo = {
   status: SampleStatus
   width: number
   height: number
+  nativeWidth: number
+  nativeHeight: number
   kind: 'rgb' | 'cube'
   format: string
   bands: number

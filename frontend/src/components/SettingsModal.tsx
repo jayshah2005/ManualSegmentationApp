@@ -52,7 +52,9 @@ export function SettingsModal() {
   const [draft, setDraft] = useState<Settings>(settings)
   const [saving, setSaving] = useState(false)
 
-  const changed = useMemo(() => JSON.stringify(draft) !== JSON.stringify(settings), [draft, settings])
+  // Only the fields this dialog saves (model/device save immediately in the Model & GPU tab).
+  const editable = (x: Settings) => [x.inputDir, x.outputDir, x.recursive, x.display, x.orientation, x.export]
+  const changed = useMemo(() => JSON.stringify(editable(draft)) !== JSON.stringify(editable(settings)), [draft, settings])
   const displayChanged = useMemo(
     () => JSON.stringify([draft.display, draft.orientation]) !== JSON.stringify([settings.display, settings.orientation]),
     [draft, settings],
@@ -175,6 +177,18 @@ export function SettingsModal() {
                   <input type="range" min={80} max={100} step={0.5} value={draft.display.stretchHigh} onChange={(e) => upd('display', { stretchHigh: Number(e.target.value) })} aria-label="Bright clip" />
                 </div>
               </label>
+              <label className="field">
+                <span>Working resolution (longest side)</span>
+                <select value={draft.display.maxSize} onChange={(e) => upd('display', { maxSize: Number(e.target.value) })}>
+                  <option value={1024}>1024 px — fastest</option>
+                  <option value={1536}>1536 px</option>
+                  <option value={2048}>2048 px — recommended</option>
+                  <option value={3072}>3072 px</option>
+                  <option value={4096}>4096 px</option>
+                  <option value={0}>Original size — slow for large photos</option>
+                </select>
+              </label>
+              <p className="muted">Big photos are shrunk while you work to keep things fast. Saved cut-outs are still made from the full-size original.</p>
               <h3>Orientation</h3>
               <label className="field">
                 <span>Rotate</span>
