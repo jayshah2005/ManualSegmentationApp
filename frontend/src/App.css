@@ -283,3 +283,5 @@ button.btn-link { display: inline; }
   .settings, .picker { grid-template-columns: 1fr; height: auto; }
   .tabs { flex-direction: row; flex-wrap: wrap; }
 }
+
+a { color: var(--accent-2); }

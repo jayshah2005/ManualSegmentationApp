@@ -1,9 +1,18 @@
+import { useEffect } from 'react'
 import { useWorkspace } from '../state/workspace'
 import { IconClose } from './Icons'
 
 export function HelpDrawer() {
   const close = useWorkspace((s) => s.setHelpOpen)
   const openSettings = useWorkspace((s) => s.openSettings)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [close])
   return (
     <div className="drawer-backdrop" onMouseDown={(e) => e.target === e.currentTarget && close(false)}>
       <aside className="drawer drawer-right help" aria-label="Help">
@@ -53,6 +62,12 @@ export function HelpDrawer() {
             <li>Hyperspectral and multispectral files are shown as a colour picture. Change which bands are used in Settings → Image display. The exported file still contains all bands.</li>
             <li>Results mirror your input folders. Finished images are remembered, so you can close the app and continue later.</li>
           </ul>
+
+          <h3>Full manual</h3>
+          <p>
+            The complete guide with screenshots is <code>docs/MANUAL.md</code> in the app folder, or{' '}
+            <a href="https://github.com/jayshah2005/ManualSegmentationApp/blob/main/docs/MANUAL.md" target="_blank" rel="noreferrer">read it on GitHub</a>.
+          </p>
 
           <h3>It feels slow?</h3>
           <p>
