@@ -20,7 +20,7 @@ export function ActionBar() {
           <>
             <strong>{image.name}</strong>
             <span className="muted">
-              {image.width}×{image.height} · {image.kind === 'cube' ? `${image.bands} bands` : 'colour image'} · {objects.length} object{objects.length === 1 ? '' : 's'}
+              {image.nativeWidth}×{image.nativeHeight}{image.nativeWidth !== image.width ? ` (working at ${image.width}×${image.height})` : ''} · {image.kind === 'cube' ? `${image.bands} bands` : 'colour image'} · {objects.length} object{objects.length === 1 ? '' : 's'}
               {dirty ? ' · unsaved changes' : image.status !== 'Pending' ? ` · ${image.status.toLowerCase()}` : ''}
             </span>
           </>
