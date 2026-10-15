@@ -1,35 +1,30 @@
 [project]
-name = "hsi-leaf-curation"
-version = "0.1.0"
-description = "HSI leaf curation API (FastAPI + SAM2 + OCR)"
+name = "segmentation-tool"
+version = "0.2.0"
+description = "Point-and-click image segmentation (SAM 2) for RGB, multispectral and hyperspectral images"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
-    "python-multipart>=0.0.12",
     "pydantic>=2.0",
     "numpy>=1.24",
     "opencv-python-headless>=4.8",
-    "pillow>=10.0",
     "spectral>=0.23",
-    "scikit-image>=0.22",
-    "easyocr>=1.7",
-    "torch>=2.5.1",
-    "torchvision>=0.20.1",
-    "SAM-2",
+    "tifffile>=2024.1.0",
+    "scipy>=1.11",
+    "h5py>=3.10",
+    "platformdirs>=4.0",
 ]
+# PyTorch and SAM 2 are NOT listed here on purpose: the right PyTorch build depends on
+# the user's GPU/driver, so the app installs them from its setup screen (see
+# backend/engine.py). The backend starts fine without them.
+
+[dependency-groups]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [tool.uv]
 package = false
 
-# Match the CUDA build previously used in my_env (torch 2.x + cu130).
-# On machines without a GPU driver, these wheels still run on CPU.
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu130" }
-torchvision = { index = "pytorch-cu130" }
-SAM-2 = { path = "third_party/sam2", editable = true }
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
