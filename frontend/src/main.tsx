@@ -1,7 +1,4 @@
-/**
- * React entry: mount the curation app into `#root`.
- * Vite serves this in dev; production build is optional-hosted by FastAPI.
- */
+/** React entry: mounts the app into `#root`. */
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'

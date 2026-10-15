@@ -1,72 +1,143 @@
 /**
- * App shell layout.
+ * App shell.
  *
- * ┌──────────────────────────────────────────────┐
- * │ TopBar  vine/sample · main label · tools     │
- * ├────────────────────────────┬─────────────────┤
- * │ SegmentationCanvas         │ LeafRail        │
- * │ (seeds / select / brush)   │ (thumbs+labels) │
- * ├────────────────────────────┴─────────────────┤
- * │ ActionBar  Skip / Save                       │
- * └──────────────────────────────────────────────┘
+ * ┌─────────────────────────────────────────────────────┐
+ * │ TopBar   image · progress · tools · settings · help │
+ * ├───────────────────────────────────┬─────────────────┤
+ * │ SegmentationCanvas                │ ObjectRail      │
+ * ├───────────────────────────────────┴─────────────────┤
+ * │ ActionBar   Skip · Save and stay · Save & next      │
+ * └─────────────────────────────────────────────────────┘
  *
- * All mutable curation state lives in `state/store.ts` (Zustand).
- * On boot, `init()` loads vine catalog then the first pending sample.
+ * First run (no folders chosen, or SAM not installed) shows the setup wizard.
+ * Everything else lives in `state/workspace.ts` and `state/editor.ts`.
  */
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SegmentationCanvas } from './canvas/SegmentationCanvas'
 import { ActionBar } from './components/ActionBar'
-import { LeafRail } from './components/LeafRail'
+import { ConfirmHost, Toasts } from './components/Feedback'
+import { HelpDrawer } from './components/HelpDrawer'
+import { ImageDrawer } from './components/ImageDrawer'
+import { ObjectEditor } from './components/ObjectEditor'
+import { ObjectRail } from './components/ObjectRail'
+import { SettingsModal } from './components/SettingsModal'
+import { SetupWizard } from './components/SetupWizard'
 import { TopBar } from './components/TopBar'
-import { useAppStore } from './state/store'
+import { useShortcuts } from './hooks/useShortcuts'
+import { useEditor } from './state/editor'
+import { useWorkspace } from './state/workspace'
 import './App.css'
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+function EmptyCanvas() {
+  const samples = useWorkspace((s) => s.samples)
+  const firstPending = useWorkspace((s) => s.firstPendingKey)
+  const setImagesOpen = useWorkspace((s) => s.setImagesOpen)
+  const openSettings = useWorkspace((s) => s.openSettings)
+  const openSample = useEditor((s) => s.openSample)
+  const loading = useEditor((s) => s.loading)
+  if (loading) return <div className="canvas-empty">Opening image…</div>
+  return (
+    <div className="canvas-empty">
+      {samples.length === 0 ? (
+        <>
+          <h2>No images found</h2>
+          <p className="muted">Check the input folder in Settings.</p>
+          <button type="button" className="btn btn-primary" onClick={() => openSettings('folders')}>
+            Open settings
+          </button>
+        </>
+      ) : (
+        <>
+          <h2>Ready when you are</h2>
+          <p className="muted">{samples.length} image{samples.length === 1 ? '' : 's'} found.</p>
+          <div className="btn-row">
+            <button type="button" className="btn btn-primary" onClick={() => void openSample(firstPending ?? samples[0].key)}>
+              {firstPending ? 'Open the next image' : 'Open the first image'}
+            </button>
+            <button type="button" className="btn" onClick={() => setImagesOpen(true)}>
+              Choose an image
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 export default function App() {
-  const loading = useAppStore((s) => s.loading)
+  const booted = useWorkspace((s) => s.booted)
+  const bootError = useWorkspace((s) => s.bootError)
+  const wizardOpen = useWorkspace((s) => s.wizardOpen)
+  const settingsOpen = useWorkspace((s) => s.settingsOpen)
+  const helpOpen = useWorkspace((s) => s.helpOpen)
+  const imagesOpen = useWorkspace((s) => s.imagesOpen)
+  const image = useEditor((s) => s.image)
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const autoOpened = useRef(false)
+
+  useShortcuts()
 
   useEffect(() => {
-    void useAppStore.getState().init()
+    void useWorkspace.getState().boot()
   }, [])
 
-  // Ctrl/Cmd+A outside text fields selects the whole page and can freeze
-  // interaction (especially in the fullscreen leaf editor). Keep select-all
-  // only where typing happens.
+  // after setup is done, open the first image that still needs work
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
-      if (e.key.toLowerCase() !== 'a' && e.code !== 'KeyA') return
-      if (isEditableTarget(e.target)) return
-      e.preventDefault()
-      window.getSelection()?.removeAllRanges()
+    if (!booted || wizardOpen || autoOpened.current) return
+    autoOpened.current = true
+    const { firstPendingKey, samples } = useWorkspace.getState()
+    const key = firstPendingKey ?? samples[0]?.key
+    if (key) void useEditor.getState().openSample(key, { force: true })
+  }, [booted, wizardOpen])
+
+  // warn before closing the tab with unsaved work
+  useEffect(() => {
+    const onUnload = (e: BeforeUnloadEvent) => {
+      const s = useEditor.getState()
+      if (s.dirty && s.objects.length) e.preventDefault()
     }
-    const clearSelectionOnPointer = () => {
-      const sel = window.getSelection()
-      if (sel && !sel.isCollapsed) sel.removeAllRanges()
-    }
-    window.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('pointerdown', clearSelectionOnPointer, true)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('pointerdown', clearSelectionOnPointer, true)
-    }
+    window.addEventListener('beforeunload', onUnload)
+    return () => window.removeEventListener('beforeunload', onUnload)
   }, [])
+
+  if (!booted) {
+    return (
+      <div className="splash">
+        {bootError ? (
+          <>
+            <h1>Can't reach the app</h1>
+            <p className="muted">{bootError}</p>
+            <button type="button" className="btn btn-primary" onClick={() => void useWorkspace.getState().boot()}>
+              Try again
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="spinner" aria-hidden />
+            <p className="muted">Starting up… the first launch checks your computer and can take a few seconds.</p>
+          </>
+        )}
+        <Toasts />
+      </div>
+    )
+  }
 
   return (
     <div className="app-shell">
       <TopBar />
       <div className="workspace">
-        <SegmentationCanvas />
-        <LeafRail />
+        {image ? <SegmentationCanvas /> : <EmptyCanvas />}
+        <ObjectRail onEdit={setEditingId} />
       </div>
       <ActionBar />
-      {loading && <div className="boot-overlay">Loading sample…</div>}
+
+      {imagesOpen && <ImageDrawer />}
+      {helpOpen && <HelpDrawer />}
+      {settingsOpen && <SettingsModal />}
+      {editingId != null && <ObjectEditor objectId={editingId} onClose={() => setEditingId(null)} />}
+      {wizardOpen && <SetupWizard onFinish={() => useWorkspace.getState().closeWizard()} />}
+      <ConfirmHost />
+      <Toasts />
     </div>
   )
 }
