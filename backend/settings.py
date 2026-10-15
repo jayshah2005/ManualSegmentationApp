@@ -61,7 +61,8 @@ class ExportSettings(BaseModel):
     format: ExportFormat = "same_as_input"
     cropToBBox: bool = True
     saveMask: bool = True
-    savePreview: bool = False
+    # Viewable RGB cut-out next to ENVI/TIFF/NPY cubes (which no normal viewer can open).
+    savePreview: bool = True
     metadata: MetadataFormat = "csv"
 
 

@@ -55,8 +55,23 @@ def test_export_cube_same_format_zero_outside(tmp_path):
     jobs = ex.plan_jobs([_obj(1, "x", mask)])
     out = tmp_path / "o"
     ex.export_objects(source=src, display_rgb=np.zeros((10, 10, 3), np.uint8), orientation=OrientationSettings(),
-                      cfg=ExportSettings(savePreview=True), jobs=jobs, out_dir=out, image_name="c.hdr")
+                      cfg=ExportSettings(), jobs=jobs, out_dir=out, image_name="c.hdr")  # preview is on by default
     saved = open_source(out / "x.hdr").read_cube()
     assert saved.shape == (4, 4, 4) and saved[0, 0].sum() == 0 and saved[1, 1].sum() == 4
     assert (out / "x_preview.png").exists()
     assert ex.resolve_format(ExportSettings(), "cube", "mat") == "npy"
+
+
+def test_preview_can_be_disabled_and_is_skipped_for_png(tmp_path):
+    from spectral.io import envi
+
+    envi.save_image(str(tmp_path / "c.hdr"), np.ones((6, 6, 3), np.float32), force=True, ext="img")
+    mask = np.zeros((6, 6), np.uint8)
+    mask[1:4, 1:4] = 255
+    jobs = ex.plan_jobs([_obj(1, "x", mask)])
+    out = tmp_path / "o"
+    ex.export_objects(source=open_source(tmp_path / "c.hdr"), display_rgb=np.zeros((6, 6, 3), np.uint8),
+                      orientation=OrientationSettings(), cfg=ExportSettings(savePreview=False),
+                      jobs=jobs, out_dir=out, image_name="c.hdr")
+    assert not (out / "x_preview.png").exists()
+    assert ex.output_files(out, "x", "png", ExportSettings()) == [out / "x.png", out / "x_mask.png"]
