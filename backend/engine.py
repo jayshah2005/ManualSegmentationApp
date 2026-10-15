@@ -8,16 +8,13 @@ from __future__ import annotations
 
 import importlib.util
 import platform
+import re
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from backend.settings import SamModel, models_dir
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_VENDORED_SAM2 = _REPO_ROOT / "third_party" / "sam2"
 
 CHECKPOINT_BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824"
 
@@ -57,22 +54,15 @@ class EngineUnavailable(Exception):
 
 
 def ensure_sam2_importable() -> bool:
-    """True if ``sam2`` can be imported (falls back to a vendored checkout for dev)."""
-    if importlib.util.find_spec("sam2") is not None:
-        return True
-    if (_VENDORED_SAM2 / "sam2").is_dir():
-        sys.path.insert(0, str(_VENDORED_SAM2))
-        return importlib.util.find_spec("sam2") is not None
-    return False
+    """True if SAM 2 *and* its dependencies (hydra) can be imported."""
+    return all(importlib.util.find_spec(m) is not None for m in ("sam2", "hydra"))
 
 
 def checkpoint_path(model: str) -> Path | None:
-    """First existing checkpoint for ``model``: app data dir, then vendored checkout."""
-    variant = SAM_VARIANTS[model]
-    for folder in (models_dir(), _VENDORED_SAM2 / "checkpoints"):
-        candidate = folder / variant.filename
-        if candidate.is_file() and candidate.stat().st_size > 1_000_000:
-            return candidate
+    """The downloaded checkpoint for ``model`` in the app data folder, if complete."""
+    candidate = models_dir() / SAM_VARIANTS[model].filename
+    if candidate.is_file() and candidate.stat().st_size > 1_000_000:
+        return candidate
     return None
 
 
@@ -81,6 +71,7 @@ def download_target(model: str) -> Path:
 
 
 def _nvidia_smi() -> dict | None:
+    """GPU name/driver/memory (+ compute capability and the newest CUDA the driver supports)."""
     exe = shutil.which("nvidia-smi")
     if not exe:
         return None
@@ -90,9 +81,48 @@ def _nvidia_smi() -> dict | None:
             capture_output=True, text=True, timeout=8, check=True,
         ).stdout.strip().splitlines()
         name, driver, mem = [p.strip() for p in out[0].split(",")]
-        return {"name": name, "driver": driver, "memoryMb": int(float(mem))}
+        info: dict = {"name": name, "driver": driver, "memoryMb": int(float(mem))}
     except (subprocess.SubprocessError, OSError, ValueError, IndexError):
         return None
+    try:  # newer drivers only
+        cap = subprocess.run(
+            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=8, check=True,
+        ).stdout.strip().splitlines()[0]
+        info["computeCap"] = float(cap)
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+        pass
+    try:
+        header = subprocess.run([exe], capture_output=True, text=True, timeout=8).stdout
+        m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", header)
+        if m:
+            info["cudaVersion"] = f"{m.group(1)}.{m.group(2)}"
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return info
+
+
+# PyTorch wheel indexes, newest first: (minimum driver CUDA version, tag).
+_CUDA_TAGS = [((13, 0), "cu130"), ((12, 8), "cu128"), ((12, 6), "cu126")]
+
+
+def recommend_torch(system: str, smi: dict | None) -> dict:
+    """Which PyTorch build to install for this machine, and why (pure function)."""
+    if system == "Darwin":
+        return {"tag": "default", "label": "Apple (Metal/MPS)", "reason": "macOS uses the standard PyTorch build, which includes Apple GPU support."}
+    if not smi:
+        return {"tag": "cpu", "label": "CPU", "reason": "No NVIDIA GPU was detected, so the CPU build will be used."}
+    cuda = smi.get("cudaVersion")
+    if not cuda:
+        return {"tag": "cu126", "label": "CUDA 12.6", "reason": "Could not read the driver's CUDA version; using a widely compatible build."}
+    ver = tuple(int(x) for x in cuda.split("."))
+    tag = next((t for need, t in _CUDA_TAGS if ver >= need), None)
+    if tag is None:
+        return {"tag": "cpu", "label": "CPU", "reason": f"Your NVIDIA driver (CUDA {cuda}) is too old for current PyTorch. Update the driver to use the GPU."}
+    cc = smi.get("computeCap")
+    if cc is not None and cc < 7.5 and tag != "cu126":
+        tag = "cu126"  # newest wheels dropped pre-Turing GPUs
+    return {"tag": tag, "label": f"CUDA {tag[2:4]}.{tag[4:]}", "reason": f"Matches your NVIDIA driver (CUDA {cuda}) and {smi['name']}."}
 
 
 def resolve_device(preference: str) -> str:
@@ -129,6 +159,7 @@ def system_status(selected_model: str, device_pref: str) -> dict:
             for v in SAM_VARIANTS.values()
         ],
         "selectedModel": selected_model,
+        "recommendedTorch": recommend_torch(platform.system(), smi),
     }
     device = "none"
     problems: list[dict] = []

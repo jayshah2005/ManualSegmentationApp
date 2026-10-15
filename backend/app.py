@@ -18,8 +18,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import session as session_routes
+from backend.api import setup as setup_routes
 from backend.api import workspace as workspace_routes
 from backend.engine import EngineUnavailable
+from backend.installer import JobManager
 from backend.models import ModelRegistry
 from backend.pipeline.discover import SampleIndex
 from backend.session import SessionManager
@@ -32,6 +34,7 @@ async def lifespan(app: FastAPI):
     app.state.models = ModelRegistry()
     app.state.session_mgr = SessionManager()
     app.state.sample_index = SampleIndex()
+    app.state.jobs = JobManager()
     yield
 
 
@@ -57,6 +60,7 @@ def health():
 
 
 app.include_router(workspace_routes.router)
+app.include_router(setup_routes.router)
 app.include_router(session_routes.router)
 
 # After `frontend` is built, serve the SPA from the same process (production).
