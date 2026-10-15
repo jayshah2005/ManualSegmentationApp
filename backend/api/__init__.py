@@ -1,5 +1,5 @@
 """HTTP routers.
 
-- ``vines``   — catalog of vine types / sample folders + completion counts
-- ``session`` — everything for the *active* sample (load, seeds, masks, save)
+- ``workspace`` — settings, folder browser, image list, system/GPU status
+- ``session``   — everything for the *active* image (load, objects, masks, save)
 """
