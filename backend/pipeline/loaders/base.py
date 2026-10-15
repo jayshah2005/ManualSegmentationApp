@@ -28,6 +28,7 @@ class SourceInfo:
     bands: int
     dtype: str
     wavelengths: list[float] | None = None
+    sensor: str | None = None  # camera name from the file header, when present
     notes: list[str] = field(default_factory=list)
 
 

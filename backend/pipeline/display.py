@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from backend.pipeline.loaders import ImageSource
+from backend.pipeline.loaders import ImageSource, SourceInfo
 from backend.settings import DisplaySettings, OrientationSettings
 
 # Visible-light targets (nm) used to pick R, G, B bands from wavelength metadata.
@@ -35,6 +35,13 @@ def resolve_bands(bands: int, wavelengths: list[float] | None, cfg: DisplaySetti
     if cfg.bandMode == "manual" and len(cfg.bands) == 3:
         return [min(max(int(b), 0), bands - 1) for b in cfg.bands]
     return auto_bands(bands, wavelengths)
+
+
+def effective_orientation(info: SourceInfo, cfg: OrientationSettings) -> OrientationSettings:
+    """The user's orientation plus automatic corrections for known cameras."""
+    if cfg.autoUpright and info.sensor and "specim iq" in info.sensor.lower():
+        return cfg.model_copy(update={"rotate": (cfg.rotate + 90) % 360})
+    return cfg
 
 
 def apply_orientation(arr: np.ndarray, cfg: OrientationSettings) -> np.ndarray:

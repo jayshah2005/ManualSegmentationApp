@@ -46,6 +46,8 @@ class OrientationSettings(BaseModel):
     rotate: Literal[0, 90, 180, 270] = 0  # clockwise degrees
     flipH: bool = False
     flipV: bool = False
+    # Specim IQ stores frames sideways; turn those upright without any setup.
+    autoUpright: bool = True
 
 
 class DisplaySettings(BaseModel):

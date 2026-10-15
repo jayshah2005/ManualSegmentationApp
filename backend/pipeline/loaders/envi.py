@@ -31,6 +31,7 @@ class EnviSource(ImageSource):
             bands=int(img.nbands),
             dtype=str(np.dtype(img.dtype)),
             wavelengths=[float(c) for c in centers] if centers else None,
+            sensor=str(getattr(img, "metadata", {}).get("sensor type") or "") or None,
         )
 
     def read_cube(self) -> np.ndarray:

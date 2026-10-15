@@ -47,11 +47,12 @@ def load_session(
         raise HTTPException(status_code=404, detail=f"Image not found: {body.sampleKey}")
     try:
         source = open_source(sample.path)
-        rgb, bands = display_mod.build_display_rgb(source, settings.display, settings.orientation)
+        orientation = display_mod.effective_orientation(source.info(), settings.orientation)
+        rgb, bands = display_mod.build_display_rgb(source, settings.display, orientation)
     except (LoadError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     with mgr.locked() as session:
-        session.start(sample, source, rgb, bands, settings.orientation)
+        session.start(sample, source, rgb, bands, orientation)
         return common.session_response(session, settings)
 
 
