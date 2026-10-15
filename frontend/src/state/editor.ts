@@ -11,6 +11,7 @@
  */
 import { create } from 'zustand'
 import {
+  ApiError,
   OverwriteConflictError,
   StaleImageError,
   addObject,
@@ -109,6 +110,13 @@ const inflight = new Set<Promise<unknown>>()
 
 const ws = () => useWorkspace.getState()
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const ENGINE_CODES = new Set(['torch_missing', 'sam2_missing', 'checkpoint_missing'])
+
+/** Missing SAM/model errors go to the setup screen (with the fix button), not a toast. */
+function reportError(e: unknown) {
+  if (e instanceof ApiError && e.code && ENGINE_CODES.has(e.code)) ws().engineFailed(e.message)
+  else ws().toast('error', errText(e))
+}
 
 function track<T>(p: Promise<T>): Promise<T> {
   inflight.add(p)
@@ -182,6 +190,7 @@ export const useEditor = create<EditorState>((set, get) => {
     dirty: false,
 
     openSample: async (sampleKey, opts) => {
+      if (!ws().ensureEngine(sampleKey)) return false // set up SAM and the model before any image opens
       const st = get()
       if (!opts?.force && st.dirty && st.objects.length > 0) {
         const ok = await ws().confirm({
@@ -273,7 +282,7 @@ export const useEditor = create<EditorState>((set, get) => {
           }
         }
       } catch (e) {
-        ws().toast('error', errText(e))
+        reportError(e)
       } finally {
         set({ busy: false })
       }
@@ -304,7 +313,7 @@ export const useEditor = create<EditorState>((set, get) => {
         const r = await guarded((k) => updatePrompts(k, active.id, points, active.box))
         if (r) replace(await hydrate(r.object, st.image.width, st.image.height, active))
       } catch (e) {
-        ws().toast('error', errText(e))
+        reportError(e)
       } finally {
         set({ busy: false })
       }

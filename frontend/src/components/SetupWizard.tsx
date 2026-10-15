@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useWorkspace } from '../state/workspace'
 import { EnginePanel } from './EnginePanel'
 import { FolderField } from './FolderField'
@@ -15,7 +14,8 @@ export function SetupWizard({ onFinish }: Props) {
   const samples = useWorkspace((s) => s.samples)
   const saveSettings = useWorkspace((s) => s.saveSettings)
   const toast = useWorkspace((s) => s.toast)
-  const [step, setStep] = useState(settings?.inputDir && settings?.outputDir ? 1 : 0)
+  const step = useWorkspace((s) => s.wizardStep)
+  const setStep = useWorkspace((s) => s.setWizardStep)
 
   const set = async (patch: Parameters<typeof saveSettings>[0]) => {
     try {
@@ -55,11 +55,6 @@ export function SetupWizard({ onFinish }: Props) {
           )}
           {step === 1 && (
             <>
-              {!ready && (
-                <button type="button" className="btn btn-link" onClick={onFinish} title="You can finish setup later in Settings">
-                  Skip for now
-                </button>
-              )}
               <button type="button" className="btn btn-primary" disabled={!ready} onClick={() => setStep(2)}>
                 Next
               </button>
