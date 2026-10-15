@@ -67,3 +67,18 @@ def test_bad_files(tmp_path):
         open_source(tmp_path / "bad.png").read_cube()
     with pytest.raises(LoadError):
         open_source(tmp_path / "x.xyz")
+
+
+def test_jpeg_exif_orientation_is_applied_but_png_data_is_untouched(tmp_path):
+    from PIL import Image
+
+    img = np.zeros((40, 60, 3), np.uint8)
+    img[:20, :30] = (255, 0, 0)  # red top-left marker
+    exif = Image.Exif()
+    exif[274] = 3  # stored upside down: viewers rotate 180 degrees
+    Image.fromarray(img).save(tmp_path / "phone.jpg", exif=exif, quality=100, subsampling=0)
+    up = open_source(tmp_path / "phone.jpg").read_cube()
+    assert up.shape == (40, 60, 3)
+    assert up[-5, -5, 0] > 200 and up[5, 5, 0] < 60  # marker moved to bottom-right
+    cv2.imwrite(str(tmp_path / "p16.png"), (np.arange(20 * 20, dtype=np.uint16).reshape(20, 20, 1).repeat(3, 2)) * 100)
+    assert open_source(tmp_path / "p16.png").read_cube().dtype == np.uint16  # 16-bit survives
