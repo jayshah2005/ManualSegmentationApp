@@ -1,0 +1,118 @@
+import cv2
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.app import app
+from backend.models import ModelRegistry
+
+
+class FakePredictor:
+    """Stands in for SAM: returns a 20x20 square around the first point / the box."""
+
+    def set_image(self, rgb):
+        self.shape = rgb.shape[:2]
+
+    def predict(self, point_coords=None, point_labels=None, box=None, multimask_output=False):
+        m = np.zeros(self.shape, bool)
+        if box is not None:
+            x0, y0, x1, y1 = [int(v) for v in box]
+        else:
+            x, y = [int(v) for v in point_coords[0]]
+            x0, y0, x1, y1 = x - 10, y - 10, x + 10, y + 10
+        m[max(y0, 0) : y1, max(x0, 0) : x1] = True
+        return m[None], np.array([0.9]), None
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    fake = FakePredictor()
+    monkeypatch.setattr(ModelRegistry, "get_sam2", lambda self, model, device: fake)
+    inp, out = tmp_path / "in", tmp_path / "out"
+    (inp / "plotA").mkdir(parents=True)
+    out.mkdir()
+    for p in (inp / "one.png", inp / "plotA" / "two.png"):
+        cv2.imwrite(str(p), np.full((60, 80, 3), 128, np.uint8))
+    with TestClient(app) as c:
+        c.put("/api/settings", json={"inputDir": str(inp), "outputDir": str(out)})
+        c.dirs = (inp, out)
+        yield c
+
+
+def test_health_and_system_boot_without_models(client):
+    assert client.get("/api/health").json() == {"ok": True}
+    status = client.get("/api/system").json()
+    assert "problems" in status and "models" in status and len(status["models"]) == 4
+
+
+def test_settings_validation(client, tmp_path):
+    inp, _ = client.dirs
+    assert client.put("/api/settings", json={"inputDir": str(tmp_path / "nope")}).status_code == 400
+    assert client.put("/api/settings", json={"outputDir": str(inp)}).status_code == 400  # same as input
+    assert client.put("/api/settings", json={"samModel": "huge"}).status_code == 422
+    assert client.put("/api/settings", json={"export": {"saveMask": False}}).json()["export"]["saveMask"] is False
+
+
+def test_fs_browser(client, tmp_path):
+    inp, _ = client.dirs
+    r = client.get("/api/fs/list", params={"path": str(inp)}).json()
+    assert [f["name"] for f in r["folders"]] == ["plotA"] and r["imageCount"] == 1 and r["writable"]
+    assert client.post("/api/fs/mkdir", json={"path": str(inp), "name": "new"}).status_code == 200
+    assert client.post("/api/fs/mkdir", json={"path": str(inp), "name": "../x"}).status_code == 400
+    assert client.get("/api/fs/list", params={"path": str(tmp_path / "ghost")}).status_code == 404
+
+
+def test_full_flow_objects_save_resume(client):
+    inp, out = client.dirs
+    lst = client.get("/api/samples").json()
+    assert [s["key"] for s in lst["samples"]] == ["one.png", "plotA/two.png"]
+    assert lst["firstPendingKey"] == "one.png"
+
+    s = client.post("/api/session/load", json={"sampleKey": "one.png"}).json()
+    assert (s["width"], s["height"], s["kind"], s["objects"]) == (80, 60, "rgb", [])
+
+    # point object, then a box object; editing #1 must not touch #2
+    s = client.post("/api/session/objects", json={"points": [{"x": 20, "y": 20}]}).json()
+    s = client.post("/api/session/objects", json={"box": {"x0": 50, "y0": 30, "x1": 70, "y1": 50}}).json()
+    assert [o["id"] for o in s["objects"]] == [1, 2]
+    client.patch("/api/session/objects/2", json={"label": "leaf 2", "shrink": 1})
+    s = client.put("/api/session/objects/1/prompts",
+                   json={"points": [{"x": 30, "y": 30}, {"x": 40, "y": 40, "label": 0}]}).json()
+    assert s["objects"][1]["label"] == "leaf 2" and s["objects"][0]["points"][1]["label"] == 0
+
+    assert client.post("/api/session/objects", json={}).status_code == 400  # needs a prompt
+    assert client.post("/api/session/objects", json={"points": [{"x": 1, "y": 1, "label": 0}]}).status_code == 400
+
+    r = client.post("/api/session/save", json={"complete": True}).json()
+    assert r["savedCount"] == 2 and r["nextSampleKey"] == "plotA/two.png"
+    assert (out / "one" / "object_001.png").exists() and (out / "one" / "leaf 2.png").exists()
+    assert (out / "one" / "objects.csv").exists()
+
+    again = client.post("/api/session/save", json={})
+    assert again.status_code == 409 and again.json()["detail"]["code"] == "would_overwrite"
+    assert client.post("/api/session/save", json={"forceOverwrite": True}).status_code == 200
+
+    counts = client.get("/api/samples").json()["counts"]
+    assert counts["Completed"] == 1 and counts["Pending"] == 1
+
+    # stale client targeting the old image is rejected
+    client.post("/api/session/load", json={"sampleKey": "plotA/two.png"})
+    assert client.post("/api/session/objects", json={"points": [{"x": 5, "y": 5}], "sampleKey": "one.png"}).status_code == 409
+    assert client.post("/api/session/skip").json()["nextSampleKey"] is None
+
+
+def test_engine_missing_returns_503(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEGTOOL_HOME", str(tmp_path / "h"))
+    import backend.engine as eng
+
+    monkeypatch.setattr(eng, "checkpoint_path", lambda model: None)
+    monkeypatch.setattr(ModelRegistry, "get_sam2", lambda self, m, d: (_ for _ in ()).throw(eng.EngineUnavailable("checkpoint_missing", "no model")))
+    inp, out = tmp_path / "i", tmp_path / "o"
+    inp.mkdir()
+    cv2.imwrite(str(inp / "a.png"), np.zeros((20, 20, 3), np.uint8))
+    with TestClient(app) as c:
+        c.put("/api/settings", json={"inputDir": str(inp), "outputDir": str(out)})
+        c.post("/api/session/load", json={"sampleKey": "a.png"})
+        r = c.post("/api/session/objects", json={"points": [{"x": 5, "y": 5}]})
+        assert r.status_code == 503 and r.json()["code"] == "checkpoint_missing"
+        assert c.get("/api/session").json()["objects"] == []

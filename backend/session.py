@@ -1,62 +1,85 @@
-"""In-memory state for the single active sample (one operator at a time).
+"""In-memory state for the single sample being segmented (one operator at a time).
 
-Not a database — restarting uvicorn clears the open sample. Progress/exports
-persist via ``pipeline.save`` under ``OUTPUT_BASE_DIR``. Use ``SessionManager.locked()``
-around multi-field updates so SAM/OCR and HTTP handlers do not interleave.
+Not a database: restarting the server clears the open sample. Progress and
+exports persist on disk under the output folder (see ``pipeline.progress`` /
+``pipeline.export``). Use ``SessionManager.locked()`` around multi-field updates.
+
+Every object has a stable ``id`` (never reused within a sample) and carries its
+own prompts so editing one object never disturbs the others.
 """
 from __future__ import annotations
 
 import threading
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 import numpy as np
 
+from backend.pipeline.discover import Sample
+from backend.pipeline.loaders import ImageSource
+from backend.pipeline.sam import Box, Point
+
+
+@dataclass
+class ObjectState:
+    id: int
+    label: str = ""
+    points: list[Point] = field(default_factory=list)
+    box: Box | None = None
+    sam_mask: np.ndarray | None = None
+    edited_mask: np.ndarray | None = None  # sam_mask + brush edits
+    brush_keep: np.ndarray | None = None  # brush-owned pixels, immune to border
+    shrink: int = 0  # border px removed from the SAM mask
+
+    def reset_edits(self) -> None:
+        if self.sam_mask is not None:
+            self.edited_mask = self.sam_mask.copy()
+            self.brush_keep = np.zeros_like(self.sam_mask)
+
 
 @dataclass
 class Session:
-    """Everything needed to curate one ``vineType/folder`` sample.
+    sample: Sample | None = None
+    source: ImageSource | None = None
+    rgb_image: np.ndarray | None = None  # uint8 (H, W, 3) shown on canvas + fed to SAM
+    bands_used: list[int] = field(default_factory=list)
+    image_token: str = ""  # changes whenever the displayed image changes
+    objects: list[ObjectState] = field(default_factory=list)
+    next_id: int = 1
 
-    Indexing note:
-    - ``sam_masks[i]`` / ``edited_masks[i]`` align with seed order (``maskIndex``).
-    - ``sorted_centroids`` reorders for the UI; ``displayIndex`` indexes that list
-      and ``leaf_shrinks``. Each centroid tuple is ``(maskIndex, cy, cx)``.
-    """
+    @property
+    def info(self):
+        """Cached ``SourceInfo`` of the open image (None when nothing is open)."""
+        return self.source.info() if self.source else None
 
-    vine_type: str = ""
-    folder: str = ""
-    sample_key: str = ""
-    png_img: np.ndarray | None = None  # camera RGB for OCR (BGR from OpenCV)
-    hsi_cube: np.ndarray | None = None
-    rgb_image: np.ndarray | None = None  # HSI-derived RGB for SAM + canvas
-    seeds: list[tuple[int, int]] = field(default_factory=list)
-    sam_masks: list[np.ndarray] | None = None
-    edited_masks: list[np.ndarray] | None = None
-    # Brush-owned pixels (immune to border). Same length/indexing as sam_masks.
-    brush_keeps: list[np.ndarray] | None = None
-    centroids: list[tuple[int, float, float]] | None = None
-    sorted_centroids: list[tuple[int, float, float]] = field(default_factory=list)
-    leaf_shrinks: list[int] = field(default_factory=list)
-    main_label: str = ""
-    sublabels: list[str] = field(default_factory=list)
-    ocr_meta: dict[str, Any] = field(default_factory=dict)
-    ndvi_thresh: float = 0.4
-    min_distance: int = 30
-    last_main_label: str = ""  # carried across samples when OCR misses the folder tag
-    sam_busy: bool = False
+    @property
+    def sample_key(self) -> str:
+        return self.sample.key if self.sample else ""
 
     @property
     def height(self) -> int:
-        if self.rgb_image is None:
-            return 0
-        return int(self.rgb_image.shape[0])
+        return 0 if self.rgb_image is None else int(self.rgb_image.shape[0])
 
     @property
     def width(self) -> int:
-        if self.rgb_image is None:
-            return 0
-        return int(self.rgb_image.shape[1])
+        return 0 if self.rgb_image is None else int(self.rgb_image.shape[1])
+
+    def new_object(self) -> ObjectState:
+        obj = ObjectState(id=self.next_id)
+        self.next_id += 1
+        self.objects.append(obj)
+        return obj
+
+    def find(self, object_id: int) -> ObjectState | None:
+        return next((o for o in self.objects if o.id == object_id), None)
+
+    def start(self, sample: Sample, source: ImageSource, rgb: np.ndarray, bands: list[int]) -> None:
+        self.sample, self.source = sample, source
+        self.rgb_image, self.bands_used = rgb, bands
+        self.image_token = uuid.uuid4().hex
+        self.objects, self.next_id = [], 1
 
 
 class SessionManager:
@@ -64,15 +87,10 @@ class SessionManager:
 
     def __init__(self) -> None:
         self._session = Session()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def get(self) -> Session:
         with self._lock:
-            return self._session
-
-    def replace(self, session: Session) -> Session:
-        with self._lock:
-            self._session = session
             return self._session
 
     def update(self, **kwargs: Any) -> Session:

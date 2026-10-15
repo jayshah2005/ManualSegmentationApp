@@ -1,13 +1,16 @@
-"""SAM2 inference and leaf ordering for the curation UI.
+"""SAM 2 prompts → one cleaned binary mask per object.
 
-Each seed becomes one binary mask. Centroids are then sorted into display order
-(left column top→bottom, right column, then bottom-center sticky-note leaf).
-That order is what the rail and ``displayIndex`` follow.
+An object is described by positive/negative points and/or a box. Only the
+object being edited is re-predicted; the image embedding is cached by the
+caller (``ModelRegistry.ensure_image``).
 """
 from __future__ import annotations
 
 import cv2
 import numpy as np
+
+Point = tuple[int, int, int]  # x, y, label (1 = include, 0 = exclude)
+Box = tuple[int, int, int, int]  # x0, y0, x1, y1
 
 
 def clean_mask(mask: np.ndarray) -> np.ndarray:
@@ -21,49 +24,28 @@ def clean_mask(mask: np.ndarray) -> np.ndarray:
     cv2.drawContours(cleaned, [largest_contour], -1, 255, thickness=cv2.FILLED)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
-    return cleaned
+    return cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
 
 
-def run_sam2_inference(sam2_predictor, rgb_image, seed_points):
-    """One positive point prompt per seed → cleaned masks + centroids.
-
-    Centroids are ``(mask_index, cy, cx)`` in image coordinates.
-    """
-    if not seed_points:
-        return [], []
-
-    sam2_predictor.set_image(rgb_image)
-    masks = []
-    centroids = []
-
-    for cx, cy in seed_points:
-        mask, _, _ = sam2_predictor.predict(
-            point_coords=np.array([[cx, cy]]),
-            point_labels=np.array([1]),
-            multimask_output=False,
-        )
-        binary_mask = (mask[0] > 0).astype(np.uint8) * 255
-        cleaned_binary_mask = clean_mask(binary_mask)
-        masks.append(cleaned_binary_mask)
-
-        y_indices, x_indices = np.where(cleaned_binary_mask == 255)
-        if len(y_indices) > 0:
-            centroids.append(
-                (len(masks) - 1, float(np.mean(y_indices)), float(np.mean(x_indices)))
-            )
-
-    return masks, centroids
+def predict_object(predictor, points: list[Point], box: Box | None) -> np.ndarray:
+    """Run SAM for one object. The image must already be set on ``predictor``."""
+    coords = labels = None
+    if points:
+        coords = np.array([[x, y] for x, y, _ in points], dtype=np.float32)
+        labels = np.array([lab for _, _, lab in points], dtype=np.int32)
+    box_arr = np.array(box, dtype=np.float32) if box else None
+    mask, _, _ = predictor.predict(
+        point_coords=coords,
+        point_labels=labels,
+        box=box_arr,
+        multimask_output=False,
+    )
+    binary = (mask[0] > 0).astype(np.uint8) * 255
+    return clean_mask(binary)
 
 
-def sort_leaf_centroids(centroids, img_h: int, img_w: int):
-    """Display order: left column, right column, then bottom-center (sticky note)."""
-    mid_x = img_w / 2
-
-    def leaf_position_key(item):
-        _idx, cy, cx = item
-        if cy > 0.65 * img_h and (0.35 * img_w < cx < 0.65 * img_w):
-            return (2, 0)
-        return (0, cy) if cx < mid_x else (1, cy)
-
-    return sorted(centroids, key=leaf_position_key)
+def mask_centroid(mask: np.ndarray) -> tuple[float, float] | None:
+    ys, xs = np.where(mask == 255)
+    if len(ys) == 0:
+        return None
+    return float(xs.mean()), float(ys.mean())
