@@ -90,7 +90,7 @@ def add_object(
         except Exception:
             session.objects.remove(obj)
             raise
-        return common.session_response(session, settings)
+        return {"object": common.object_payload(obj)}
 
 
 @router.put("/api/session/objects/{object_id}/prompts")
@@ -116,7 +116,7 @@ def update_prompts(
         except Exception:
             obj.points, obj.box = old
             raise
-        return common.session_response(session, settings)
+        return {"object": common.object_payload(obj)}
 
 
 @router.patch("/api/session/objects/{object_id}")
@@ -124,7 +124,6 @@ def patch_object(
     object_id: int,
     body: ObjectPatch,
     mgr: SessionManager = Depends(get_session_mgr),
-    store: SettingsStore = Depends(get_settings_store),
 ):
     """Rename an object or change its border (px removed from the edge)."""
     with mgr.locked() as session:
@@ -136,7 +135,7 @@ def patch_object(
             obj.label = body.label.strip()
         if body.shrink is not None:
             obj.shrink = int(body.shrink)
-        return common.session_response(session, store.get())
+        return {"id": obj.id, "label": obj.label, "shrink": obj.shrink}
 
 
 @router.delete("/api/session/objects/{object_id}")
@@ -144,7 +143,6 @@ def delete_object(
     object_id: int,
     sampleKey: str | None = None,
     mgr: SessionManager = Depends(get_session_mgr),
-    store: SettingsStore = Depends(get_settings_store),
 ):
     with mgr.locked() as session:
         common.assert_sample_key(session, sampleKey)
@@ -152,14 +150,13 @@ def delete_object(
         if obj is None:
             raise HTTPException(status_code=404, detail="Object not found")
         session.objects.remove(obj)
-        return common.session_response(session, store.get())
+        return {"deletedId": object_id}
 
 
 @router.post("/api/session/suggest-borders")
 def suggest_borders(
     sampleKey: str | None = None,
     mgr: SessionManager = Depends(get_session_mgr),
-    store: SettingsStore = Depends(get_settings_store),
 ):
     """Heuristic border width for every object (based on size and edge roughness)."""
     with mgr.locked() as session:
@@ -167,7 +164,7 @@ def suggest_borders(
         for obj in session.objects:
             if obj.edited_mask is not None:
                 obj.shrink = masks_mod.suggest_mask_shrink(obj.edited_mask)
-        return common.session_response(session, store.get())
+        return {"shrinks": {str(o.id): o.shrink for o in session.objects}}
 
 
 def _apply_masks(session: Session, items) -> None:
@@ -190,13 +187,12 @@ def _apply_masks(session: Session, items) -> None:
 def update_masks(
     body: MasksRequest,
     mgr: SessionManager = Depends(get_session_mgr),
-    store: SettingsStore = Depends(get_settings_store),
 ):
-    """Push client brush edits into the session."""
+    """Push client brush edits into the session (the client already has them: no echo)."""
     with mgr.locked() as session:
         common.assert_sample_key(session, body.sampleKey)
         _apply_masks(session, body.masks)
-        return common.session_response(session, store.get())
+        return {"ok": True, "count": len(body.masks)}
 
 
 @router.post("/api/session/objects/{object_id}/reset-mask")
@@ -204,7 +200,6 @@ def reset_mask(
     object_id: int,
     sampleKey: str | None = None,
     mgr: SessionManager = Depends(get_session_mgr),
-    store: SettingsStore = Depends(get_settings_store),
 ):
     """Discard brush edits for one object (back to the SAM result)."""
     with mgr.locked() as session:
@@ -213,7 +208,7 @@ def reset_mask(
         if obj is None:
             raise HTTPException(status_code=404, detail="Object not found")
         obj.reset_edits()
-        return common.session_response(session, store.get())
+        return {"object": common.object_payload(obj)}
 
 
 @router.post("/api/session/save")
