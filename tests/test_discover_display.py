@@ -3,7 +3,7 @@ import numpy as np
 from spectral.io import envi
 
 from backend.pipeline.discover import discover
-from backend.pipeline.display import apply_orientation, auto_bands, build_display_rgb, effective_orientation
+from backend.pipeline.display import apply_orientation, auto_bands, build_display_rgb, effective_orientation, limit_size, oriented_size
 from backend.pipeline.loaders import open_source
 from backend.settings import DisplaySettings, OrientationSettings
 
@@ -90,3 +90,12 @@ def test_specim_iq_is_turned_upright_automatically(tmp_path):
     assert effective_orientation(specim, OrientationSettings(rotate=90)).rotate == 180
     assert effective_orientation(specim, OrientationSettings(autoUpright=False)).rotate == 0
     assert effective_orientation(other, OrientationSettings()).rotate == 0
+
+
+def test_working_resolution_cap():
+    big = np.zeros((300, 600, 3), np.uint8)
+    assert limit_size(big, 0).shape == big.shape  # 0 = full size
+    assert limit_size(big, 1000).shape == big.shape  # already small enough
+    assert limit_size(big, 300).shape == (150, 300, 3)
+    assert oriented_size(600, 300, OrientationSettings(rotate=90)) == (600, 300)
+    assert oriented_size(600, 300, OrientationSettings()) == (300, 600)

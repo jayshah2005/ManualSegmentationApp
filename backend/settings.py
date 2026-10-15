@@ -57,6 +57,9 @@ class DisplaySettings(BaseModel):
     bands: list[int] = Field(default_factory=lambda: [0, 1, 2])  # R, G, B (manual)
     stretchLow: float = Field(2.0, ge=0.0, le=49.0)
     stretchHigh: float = Field(98.0, ge=51.0, le=100.0)
+    # Longest side of the picture you click on and SAM sees. Larger originals are
+    # shrunk for working and the masks are scaled back up on export. 0 = full size.
+    maxSize: int = Field(2048, ge=0, le=16384)
 
 
 class ExportSettings(BaseModel):

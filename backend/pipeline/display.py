@@ -4,6 +4,7 @@ SAM only ever sees this picture; the full cube is re-read at export time.
 """
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from backend.pipeline.loaders import ImageSource, SourceInfo
@@ -74,6 +75,20 @@ def stretch_to_uint8(arr: np.ndarray, low: float, high: float) -> np.ndarray:
     return (scaled * 255.0 + 0.5).astype(np.uint8)
 
 
+def limit_size(rgb: np.ndarray, max_size: int) -> np.ndarray:
+    """Shrink so the longest side is at most ``max_size`` (0 = keep full size)."""
+    h, w = rgb.shape[:2]
+    if max_size <= 0 or max(h, w) <= max_size:
+        return rgb
+    scale = max_size / max(h, w)
+    return cv2.resize(rgb, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
+
+
+def oriented_size(width: int, height: int, cfg: OrientationSettings) -> tuple[int, int]:
+    """``(height, width)`` of an image after ``cfg``'s rotation."""
+    return (width, height) if cfg.rotate in (90, 270) else (height, width)
+
+
 def build_display_rgb(
     source: ImageSource, display: DisplaySettings, orientation: OrientationSettings
 ) -> tuple[np.ndarray, list[int]]:
@@ -89,4 +104,4 @@ def build_display_rgb(
         used = resolve_bands(info.bands, info.wavelengths, display)
         rgb = source.read_bands(used)
     rgb = stretch_to_uint8(rgb, display.stretchLow, display.stretchHigh)
-    return apply_orientation(rgb, orientation), used
+    return limit_size(apply_orientation(rgb, orientation), display.maxSize), used

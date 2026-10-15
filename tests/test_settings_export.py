@@ -75,3 +75,19 @@ def test_preview_can_be_disabled_and_is_skipped_for_png(tmp_path):
                       jobs=jobs, out_dir=out, image_name="c.hdr")
     assert not (out / "x_preview.png").exists()
     assert ex.output_files(out, "x", "png", ExportSettings()) == [out / "x.png", out / "x_mask.png"]
+
+
+def test_masks_are_scaled_up_to_the_original_resolution(tmp_path):
+    full = np.full((200, 300, 3), 180, np.uint8)
+    src_path = tmp_path / "big.png"
+    cv2.imwrite(str(src_path), full)
+    work = cv2.resize(full, (150, 100), interpolation=cv2.INTER_AREA)  # working picture is half size
+    mask = np.zeros((100, 150), np.uint8)
+    mask[20:60, 30:90] = 255
+    jobs = ex.plan_jobs([_obj(1, "a", mask)])
+    out = tmp_path / "o"
+    recs = ex.export_objects(source=open_source(src_path), display_rgb=work, orientation=OrientationSettings(),
+                             cfg=ExportSettings(), jobs=jobs, out_dir=out, image_name="big.png", native_hw=(200, 300))
+    png = cv2.imread(str(out / "a.png"), cv2.IMREAD_UNCHANGED)
+    assert abs(png.shape[0] - 80) <= 2 and abs(png.shape[1] - 120) <= 2  # 40x60 at half size -> 80x120 original pixels
+    assert recs[0]["bbox"][0] in (59, 60, 61) and recs[0]["areaPx"] > 9000
