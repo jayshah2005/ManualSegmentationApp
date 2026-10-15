@@ -20,7 +20,7 @@ import { useViewport, computeTransform, type Region } from '../hooks/useViewport
 import { useEditor, type EditObject } from '../state/editor'
 import { useWorkspace } from '../state/workspace'
 import { brushRadius, stampLine } from './brush'
-import { cutoutFor, overlayFor, resetCanvasCaches } from './bitmaps'
+import { cutoutFor, overlayFor, overlayBounds, resetCanvasCaches } from './bitmaps'
 import { objectColor } from './colors'
 import { visibleMask } from './visible'
 
@@ -270,6 +270,15 @@ export function SegmentationCanvas({ region: regionProp, focusId = null, classNa
   }
   const inside = (p: { x: number; y: number }) => p.x >= 0 && p.y >= 0 && p.x < imgW && p.y < imgH
 
+  /** Is (x, y) on or close to the object (its box grown by 25%, at least 16 px)? */
+  const nearObject = (o: EditObject, x: number, y: number) => {
+    const b = overlayBounds(o.id)
+    if (!b) return true
+    const pad = Math.max(16, 0.25 * Math.max(b.x1 - b.x0, b.y1 - b.y0))
+    const near = x >= b.x0 - pad && x <= b.x1 + pad && y >= b.y0 - pad && y <= b.y1 + pad
+    return near || o.points.some((q) => Math.hypot(q.x - x, q.y - y) < pad)
+  }
+
   const objectAt = (x: number, y: number): EditObject | null => {
     const ed = useEditor.getState()
     const ix = Math.floor(x)
@@ -324,6 +333,12 @@ export function SegmentationCanvas({ region: regionProp, focusId = null, classNa
         return
       }
       const exclude = e.button === 2 || e.shiftKey
+      // An include click well away from the active object means "next object": people
+      // forget to press N, and refining would silently change the wrong object.
+      if (!exclude && activeObj && !nearObject(activeObj, p.x, p.y)) {
+        ed.newObject()
+        useWorkspace.getState().toast('info', 'Started a new object. Click inside an object to add to it instead.')
+      }
       void ed.placePrompt({ point: { x: Math.floor(p.x), y: Math.floor(p.y), label: exclude ? 0 : 1 } })
       return
     }
@@ -419,6 +434,11 @@ export function SegmentationCanvas({ region: regionProp, focusId = null, classNa
       const w = Math.abs(drag.x1 - drag.x0) * t.scale
       const h = Math.abs(drag.y1 - drag.y0) * t.scale
       if (w >= MIN_BOX_PX && h >= MIN_BOX_PX) {
+        const ed = useEditor.getState()
+        const activeObj = ed.objects.find((o) => o.id === ed.activeId)
+        const cx = (drag.x0 + drag.x1) / 2
+        const cy = (drag.y0 + drag.y1) / 2
+        if (activeObj && !nearObject(activeObj, cx, cy)) ed.newObject() // box centred elsewhere = new object
         void useEditor.getState().placePrompt({
           box: { x0: Math.round(Math.min(drag.x0, drag.x1)), y0: Math.round(Math.min(drag.y0, drag.y1)), x1: Math.round(Math.max(drag.x0, drag.x1)), y1: Math.round(Math.max(drag.y0, drag.y1)) },
         })

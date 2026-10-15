@@ -41,7 +41,7 @@ function dt1d(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Flo
   }
 }
 
-/** Squared distance from every pixel to the nearest zero pixel (the image border is handled by the caller). */
+/** Squared distance from each pixel to the nearest zero pixel, over a `w`×`h` array. */
 export function edt2(fg: Uint8Array, w: number, h: number): Float32Array {
   const out = new Float32Array(w * h)
   const n = Math.max(w, h)
@@ -64,15 +64,33 @@ export function edt2(fg: Uint8Array, w: number, h: number): Float32Array {
   return out
 }
 
-const edtCache = new WeakMap<Uint8Array, Float32Array>()
+/**
+ * Distances measured only inside the mask's bounding box plus a 1 px ring of
+ * background. That is exact: everything outside the box is background anyway, and
+ * the ring is also what makes the image edge count as background. For a small
+ * object in a 24 MP photo this is a few KB instead of ~100 MB.
+ */
+type BoxDistance = { x0: number; y0: number; pw: number; e: Float32Array }
+const edtCache = new WeakMap<Uint8Array, BoxDistance | null>()
 
-function samDistance(sam: Uint8Array, w: number, h: number): Float32Array {
-  let e = edtCache.get(sam)
-  if (!e) {
-    e = edt2(sam, w, h)
-    edtCache.set(sam, e)
+function samDistance(sam: Uint8Array, w: number, h: number): BoxDistance | null {
+  if (edtCache.has(sam)) return edtCache.get(sam)!
+  const b = maskBounds(sam, w, h)
+  let result: BoxDistance | null = null
+  if (b) {
+    const bw = b.x1 - b.x0 + 1
+    const bh = b.y1 - b.y0 + 1
+    const pw = bw + 2
+    const ph = bh + 2
+    const padded = new Uint8Array(pw * ph)
+    for (let y = 0; y < bh; y++) {
+      const src = (b.y0 + y) * w + b.x0
+      padded.set(sam.subarray(src, src + bw), (y + 1) * pw + 1)
+    }
+    result = { x0: b.x0, y0: b.y0, pw, e: edt2(padded, pw, ph) }
   }
-  return e
+  edtCache.set(sam, result)
+  return result
 }
 
 type Cached = { rev: number; shrink: number; mask: Uint8Array; vis: Uint8Array }
@@ -97,18 +115,18 @@ export function visibleMask(obj: EditObject, w: number, h: number, rev: number):
     vis = mask
   } else {
     vis = new Uint8Array(mask.length)
-    const e = samDistance(sam, w, h)
+    const dist = samDistance(sam, w, h)
     const rr = r * r
     for (let y = 0; y < h; y++) {
-      const edgeY = Math.min(y + 1, h - y)
+      const row = y * w
       for (let x = 0; x < w; x++) {
-        const i = y * w + x
+        const i = row + x
         if (mask[i] === 0) continue
-        if (keep[i] !== 0 || sam[i] === 0) {
-          vis[i] = 255
+        if (keep[i] !== 0 || sam[i] === 0 || !dist) {
+          vis[i] = 255 // brush additions and brush-owned pixels are never trimmed
           continue
         }
-        if (Math.min(edgeY, x + 1, w - x) > r && e[i] > rr) vis[i] = 255
+        if (dist.e[(y - dist.y0 + 1) * dist.pw + (x - dist.x0 + 1)] > rr) vis[i] = 255
       }
     }
   }

@@ -82,6 +82,12 @@ export function cutoutFor(o: EditObject, rev: number, w: number, h: number, img:
 }
 
 /** Drop all cached bitmaps (when the image or picture changes). */
+/** Pixel bounds of an object's current overlay (null until it has been drawn). */
+export function overlayBounds(id: number) {
+  const ov = overlayStore.get(id)
+  return ov ? { x0: ov.x0, y0: ov.y0, x1: ov.x0 + ov.canvas.width - 1, y1: ov.y0 + ov.canvas.height - 1 } : null
+}
+
 export function resetCanvasCaches() {
   overlayStore = new Map()
   cutoutStore = new Map()
