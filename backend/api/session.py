@@ -49,10 +49,12 @@ def load_session(
         source = open_source(sample.path)
         orientation = display_mod.effective_orientation(source.info(), settings.orientation)
         rgb, bands = display_mod.build_display_rgb(source, settings.display, orientation)
+        info = source.info()
+        native_hw = display_mod.oriented_size(info.width, info.height, orientation)
     except (LoadError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     with mgr.locked() as session:
-        session.start(sample, source, rgb, bands, orientation)
+        session.start(sample, source, rgb, bands, orientation, native_hw)
         return common.session_response(session, settings)
 
 
@@ -245,7 +247,7 @@ def save_session(
         try:
             records = export_mod.export_objects(
                 source=session.source, display_rgb=session.rgb_image,
-                orientation=session.orientation, cfg=settings.export,
+                orientation=session.orientation, native_hw=session.native_hw, cfg=settings.export,
                 jobs=jobs, out_dir=out_dir, image_name=session.sample.name,
             )
             progress = progress_mod.load_progress(settings.outputDir)

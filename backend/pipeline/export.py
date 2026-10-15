@@ -15,7 +15,7 @@ from __future__ import annotations
 import csv
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -37,6 +37,12 @@ class ExportJob:
     name: str  # file stem
     obj: ObjectState
     mask: np.ndarray  # final 0/255 mask in oriented coordinates
+
+
+def _scale_mask(mask: np.ndarray, hw: tuple[int, int]) -> np.ndarray:
+    """Resize a 0/255 mask to ``hw`` with smooth edges, then re-binarise."""
+    big = cv2.resize(mask, (hw[1], hw[0]), interpolation=cv2.INTER_LINEAR)
+    return (big > 127).astype(np.uint8) * 255
 
 
 def safe_stem(label: str, obj_id: int) -> str:
@@ -146,9 +152,17 @@ def export_objects(
     jobs: list[ExportJob],
     out_dir: Path,
     image_name: str,
+    native_hw: tuple[int, int] | None = None,
 ) -> list[dict]:
-    """Write every job; returns one record per exported object."""
+    """Write every job; returns one record per exported object.
+
+    Masks are drawn at the working resolution; when the original is larger
+    (``native_hw``) they are scaled up so cut-outs keep every original pixel.
+    """
     info = source.info()
+    if native_hw is not None and tuple(display_rgb.shape[:2]) != tuple(native_hw):
+        jobs = [replace(j, mask=_scale_mask(j.mask, native_hw)) for j in jobs]
+        display_rgb = cv2.resize(display_rgb, (native_hw[1], native_hw[0]), interpolation=cv2.INTER_LINEAR)
     fmt = resolve_format(cfg, info.kind, info.format)
     out_dir.mkdir(parents=True, exist_ok=True)
 

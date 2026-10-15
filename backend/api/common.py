@@ -80,6 +80,8 @@ def session_response(session: Session, settings: Settings) -> dict[str, Any]:
         "status": status,
         "width": session.width,
         "height": session.height,
+        "nativeWidth": session.native_hw[1],
+        "nativeHeight": session.native_hw[0],
         "kind": info.kind if info else "rgb",
         "format": info.format if info else "",
         "bands": info.bands if info else 3,

@@ -50,6 +50,8 @@ class Session:
     # Orientation the canvas was built with; export must use the same one even if
     # the user changes the setting while this image is open.
     orientation: OrientationSettings = field(default_factory=OrientationSettings)
+    # (height, width) of the original after orientation; masks are scaled to this on export.
+    native_hw: tuple[int, int] = (0, 0)
     objects: list[ObjectState] = field(default_factory=list)
     next_id: int = 1
 
@@ -86,9 +88,11 @@ class Session:
         rgb: np.ndarray,
         bands: list[int],
         orientation: OrientationSettings,
+        native_hw: tuple[int, int],
     ) -> None:
         self.sample, self.source = sample, source
         self.orientation = orientation
+        self.native_hw = native_hw
         self.rgb_image, self.bands_used = rgb, bands
         self.image_token = uuid.uuid4().hex
         self.objects, self.next_id = [], 1
