@@ -179,6 +179,11 @@ export function EnginePanel() {
             <strong>{job.status === 'running' ? job.step || 'Working…' : job.status === 'done' ? 'Finished' : 'Something went wrong'}</strong>
             {job.status === 'error' && <span className="field-error">{job.error}</span>}
           </div>
+          {running && (job.kind === 'install_torch' || job.kind === 'setup_all') && (
+            <p className="muted">
+              The GPU version of PyTorch is a 2–3 GB download and can take 10–20 minutes. Nothing is stuck — open “Show details” to watch the progress.
+            </p>
+          )}
           <div className={job.progress == null && running ? 'bar bar-indeterminate' : 'bar'}>
             <span style={{ width: `${Math.round((job.progress ?? (job.status === 'done' ? 1 : 0)) * 100)}%` }} />
           </div>
