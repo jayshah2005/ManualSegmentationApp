@@ -1,48 +1,30 @@
 #!/usr/bin/env bash
-# Start API + Vite UI for local curation (uv + npm).
-# Waits until the API accepts connections so the first /api/vines call does not race.
+# Developer mode: API with auto-reload on :8000 + Vite dev server on :5173 (proxies /api).
+# End users should run ./start.sh instead.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-export PATH="${HOME}/.local/node/bin:${PATH}"
+export PATH="${HOME}/.local/node/bin:${HOME}/.local/bin:${PATH}"   # Vite 8 needs Node 20+
 export SAM2_BUILD_CUDA="${SAM2_BUILD_CUDA:-0}"
-
-API_HOST="${HSI_HOST:-127.0.0.1}"
-API_PORT="${HSI_PORT:-8000}"
-API_URL="http://${API_HOST}:${API_PORT}/api/vines"
-
-api_ready() {
-  python3 - "$API_URL" <<'PY'
-import sys, urllib.request
-url = sys.argv[1]
-try:
-    with urllib.request.urlopen(url, timeout=1) as r:
-        sys.exit(0 if 200 <= r.status < 500 else 1)
-except Exception:
-    sys.exit(1)
-PY
-}
+HOST="${SEGTOOL_HOST:-127.0.0.1}"
+PORT="${SEGTOOL_PORT:-8000}"
 
 cd "$ROOT"
-"$ROOT/scripts/run_backend.py" &
+# 'uv run' keeps PyTorch installed by the app; do not use a plain 'uv sync' here.
+uv run uvicorn backend.app:app --host "$HOST" --port "$PORT" --reload --reload-dir backend &
 API_PID=$!
 trap 'kill $API_PID 2>/dev/null || true' EXIT
 
-echo -n "Waiting for API"
+echo -n "Waiting for the API"
 for _ in $(seq 1 120); do
-  if ! kill -0 "$API_PID" 2>/dev/null; then
-    echo
-    echo "API process exited before becoming ready." >&2
-    wait "$API_PID" || true
-    exit 1
-  fi
-  if api_ready; then
+  if ! kill -0 "$API_PID" 2>/dev/null; then echo; echo "API exited early." >&2; wait "$API_PID" || true; exit 1; fi
+  if python3 -c "import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://$HOST:$PORT/api/health',timeout=1).status==200 else 1)" 2>/dev/null; then
     echo " ready."
-    exec "$ROOT/scripts/run_frontend.sh"
+    cd "$ROOT/frontend"
+    [[ -d node_modules ]] || npm install
+    echo "UI: http://127.0.0.1:5173 (API on http://$HOST:$PORT)"
+    exec npm run dev -- --host 127.0.0.1 --port 5173
   fi
-  echo -n "."
-  sleep 0.25
+  echo -n "."; sleep 0.25
 done
-
-echo
-echo "Timed out waiting for API at ${API_URL}" >&2
+echo "Timed out waiting for the API." >&2
 exit 1
