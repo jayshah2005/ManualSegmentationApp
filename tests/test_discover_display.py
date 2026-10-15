@@ -34,7 +34,7 @@ def test_discovery_nested_dedupe_and_specim(tmp_path):
     keys = [s.key for s in discover(root, True, exclude=[root / "out"])]
     assert keys == ["a.png", "cap1", "cube1.hdr", "sub/deep/b.png"]
     flat = [s.key for s in discover(root, False, exclude=[root / "out"])]
-    assert flat == ["a.png", "cap1", "cube1.hdr"] or flat == ["a.png", "cube1.hdr"]
+    assert flat == ["a.png", "cap1", "cube1.hdr"]  # capture folders count even when not recursive
     specim = next(s for s in discover(root) if s.key == "cap1")
     assert specim.is_folder and specim.path.name == "REFLECTANCE_cap1.hdr"
     assert specim.output_rel == "cap1"
@@ -60,3 +60,11 @@ def test_display_rgb_for_cube(tmp_path):
     envi.save_image(str(tmp_path / "c.hdr"), cube, force=True, ext="img")
     rgb, used = build_display_rgb(open_source(tmp_path / "c.hdr"), DisplaySettings(), OrientationSettings(rotate=90))
     assert rgb.dtype == np.uint8 and rgb.shape == (7, 6, 3) and len(used) == 3
+
+
+def test_same_stem_files_get_distinct_output_folders(tmp_path):
+    _png(tmp_path / "x.png")
+    _envi(tmp_path / "x.hdr")
+    _png(tmp_path / "solo.png")
+    rels = {s.key: s.output_rel for s in discover(tmp_path)}
+    assert rels == {"x.png": "x_png", "x.hdr": "x_hdr", "solo.png": "solo"}
