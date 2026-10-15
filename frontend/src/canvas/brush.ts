@@ -221,8 +221,3 @@ export function hexToRgb(hex: string): [number, number, number] {
   if (Number.isNaN(n)) return [61, 154, 106]
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
 }
-
-/** @deprecated Prefer store `maskOverlayColor` + `hexToRgb`. */
-export function leafColor(_index: number, hex = '#3d9a6a'): [number, number, number] {
-  return hexToRgb(hex)
-}
