@@ -1,4 +1,4 @@
-"""Mask morph ops used at export time and for border suggestions.
+"""Mask morph ops used at export time and for trim suggestions.
 
 Binary masks are uint8 with 0 = background and 255 = foreground.
 """
@@ -11,8 +11,8 @@ import numpy as np
 def disk_kernel(radius: int) -> np.ndarray:
     """Binary disk SE matching the UI border test (``dx*dx + dy*dy <= r*r``).
 
-    Must stay in sync with ``isKeptAfterShrink`` in
-    ``frontend/src/canvas/maskRegion.ts`` so Save matches on-screen borders.
+    Must stay in sync with ``visibleMask`` in ``frontend/src/canvas/visible.ts``
+    (a disk of this radius must fit inside the mask) so Save matches the on-screen trim.
     """
     r = max(0, int(radius))
     if r <= 0:
@@ -116,33 +116,6 @@ def suggest_mask_shrink(mask: np.ndarray, min_px: int = 2, max_px: int = 30) -> 
 
     suggested = int(round(base))
     return int(np.clip(suggested, min_px, min(max_px, max(min_px, min_side // 6))))
-
-
-def crop_masked_leaf(hsi_cube, mask, shrink_px=0, sam_mask=None, brush_keep=None):
-    """Apply shrink, zero outside the mask, crop to bbox — what Save writes as ENVI."""
-    working = apply_shrink_preserving_edits(
-        mask, sam_mask=sam_mask, shrink_px=shrink_px, brush_keep=brush_keep
-    )
-    bbox = mask_bbox(working)
-    if bbox is None:
-        return None
-    ymin, ymax, xmin, xmax = bbox
-    masked_hsi = hsi_cube * (working[:, :, np.newaxis] > 0)
-    return masked_hsi[ymin : ymax + 1, xmin : xmax + 1, :]
-
-
-def rgb_crop_preview(rgb_image, mask, shrink_px=0, sam_mask=None, brush_keep=None):
-    """RGB preview matching ``crop_masked_leaf`` geometry (for UI thumbs / fullscreen)."""
-    working = apply_shrink_preserving_edits(
-        mask, sam_mask=sam_mask, shrink_px=shrink_px, brush_keep=brush_keep
-    )
-    bbox = mask_bbox(working)
-    if bbox is None:
-        return None
-    ymin, ymax, xmin, xmax = bbox
-    masked = rgb_image.copy()
-    masked[working == 0] = 0
-    return masked[ymin : ymax + 1, xmin : xmax + 1]
 
 
 def encode_mask_png(mask: np.ndarray) -> bytes:
