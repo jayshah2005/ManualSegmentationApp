@@ -72,13 +72,21 @@ def test_full_flow_objects_save_resume(client):
     assert (s["width"], s["height"], s["kind"], s["objects"]) == (80, 60, "rgb", [])
 
     # point object, then a box object; editing #1 must not touch #2
-    s = client.post("/api/session/objects", json={"points": [{"x": 20, "y": 20}]}).json()
-    s = client.post("/api/session/objects", json={"box": {"x0": 50, "y0": 30, "x1": 70, "y1": 50}}).json()
-    assert [o["id"] for o in s["objects"]] == [1, 2]
-    client.patch("/api/session/objects/2", json={"label": "leaf 2", "shrink": 1})
-    s = client.put("/api/session/objects/1/prompts",
+    r1 = client.post("/api/session/objects", json={"points": [{"x": 20, "y": 20}]}).json()
+    r2 = client.post("/api/session/objects", json={"box": {"x0": 50, "y0": 30, "x1": 70, "y1": 50}}).json()
+    assert set(r1) == {"object"} and (r1["object"]["id"], r2["object"]["id"]) == (1, 2)  # only the new object comes back
+    assert "thumbnailJpegBase64" not in r1["object"]
+    assert client.patch("/api/session/objects/2", json={"label": "leaf 2", "shrink": 1}).json() == {"id": 2, "label": "leaf 2", "shrink": 1}
+    r = client.put("/api/session/objects/1/prompts",
                    json={"points": [{"x": 30, "y": 30}, {"x": 40, "y": 40, "label": 0}]}).json()
-    assert s["objects"][1]["label"] == "leaf 2" and s["objects"][0]["points"][1]["label"] == 0
+    assert list(r) == ["object"] and r["object"]["points"][1]["label"] == 0
+    s = client.get("/api/session").json()  # full snapshot still has both, #2 untouched
+    assert [o["label"] for o in s["objects"]] == ["", "leaf 2"]
+    assert client.post("/api/session/suggest-borders").json()["shrinks"].keys() == {"1", "2"}
+    assert client.post("/api/session/objects/1/reset-mask").json()["object"]["id"] == 1
+    assert client.post("/api/session/masks", json={"masks": []}).json() == {"ok": True, "count": 0}
+    gone = client.post("/api/session/objects", json={"points": [{"x": 5, "y": 5}]}).json()["object"]["id"]
+    assert client.delete(f"/api/session/objects/{gone}").json() == {"deletedId": gone}
 
     assert client.post("/api/session/objects", json={}).status_code == 400  # needs a prompt
     assert client.post("/api/session/objects", json={"points": [{"x": 1, "y": 1, "label": 0}]}).status_code == 400

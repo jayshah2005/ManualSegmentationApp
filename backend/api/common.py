@@ -41,29 +41,13 @@ def decode_mask_b64(data: str) -> np.ndarray:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _thumbnail(session: Session, obj: ObjectState) -> str | None:
-    preview = masks_mod.rgb_crop_preview(
-        session.rgb_image, obj.edited_mask, shrink_px=obj.shrink,
-        sam_mask=obj.sam_mask, brush_keep=obj.brush_keep,
-    )
-    if preview is None:
-        return None
-    h, w = preview.shape[:2]
-    scale = min(1.0, 220.0 / max(h, w))
-    if scale < 0.999:
-        preview = cv2.resize(
-            preview, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA
-        )
-    return base64.b64encode(encode_jpeg(preview, 85)).decode("ascii")
-
-
-def object_payload(session: Session, obj: ObjectState, display_index: int) -> dict[str, Any]:
+def object_payload(obj: ObjectState) -> dict[str, Any]:
+    """One object with its masks. The browser draws thumbnails itself from these."""
     mask = obj.edited_mask
     centroid = sam_mod.mask_centroid(mask) if mask is not None else None
     zeros = np.zeros_like(mask) if mask is not None else None
     return {
         "id": obj.id,
-        "number": display_index + 1,
         "label": obj.label,
         "shrink": obj.shrink,
         "points": [{"x": x, "y": y, "label": lab} for x, y, lab in obj.points],
@@ -76,7 +60,6 @@ def object_payload(session: Session, obj: ObjectState, display_index: int) -> di
         "samMaskPngBase64": mask_b64(obj.sam_mask) if obj.sam_mask is not None else None,
         "brushKeepPngBase64": mask_b64(obj.brush_keep if obj.brush_keep is not None else zeros)
         if zeros is not None else None,
-        "thumbnailJpegBase64": _thumbnail(session, obj) if mask is not None else None,
     }
 
 
@@ -101,7 +84,7 @@ def session_response(session: Session, settings: Settings) -> dict[str, Any]:
         "format": info.format if info else "",
         "bands": info.bands if info else 3,
         "bandsUsed": session.bands_used,
-        "objects": [object_payload(session, o, i) for i, o in enumerate(session.objects)],
+        "objects": [object_payload(o) for o in session.objects],
     }
 
 
