@@ -85,11 +85,16 @@ def discover(
         raise NotADirectoryError(str(root_path))
     skip = [p.resolve() for p in (exclude or [])]
     samples: list[Sample] = []
+    seen: set[Path] = set()  # real paths already walked (symlink cycles)
 
     def rel(p: Path) -> str:
         return p.relative_to(root_path).as_posix()
 
     def walk(folder: Path) -> None:
+        real = folder.resolve()
+        if real in seen:
+            return
+        seen.add(real)
         try:
             entries = sorted(os.scandir(folder), key=lambda e: _natural(e.name))
         except OSError:
@@ -98,7 +103,7 @@ def discover(
             if entry.name.startswith(".") or entry.name == "__MACOSX":
                 continue
             path = Path(entry.path)
-            if entry.is_dir(follow_symlinks=False):
+            if entry.is_dir():  # follows symlinks; `seen` stops cycles
                 if any(path.resolve() == s for s in skip):
                     continue
                 specim = _specim_hdr(path)
