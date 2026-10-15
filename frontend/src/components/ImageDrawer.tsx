@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { SampleRow, SampleStatus } from '../api/client'
 import { useEditor } from '../state/editor'
 import { useWorkspace } from '../state/workspace'
@@ -17,6 +17,14 @@ export function ImageDrawer() {
   const openSample = useEditor((s) => s.openSample)
   const [filter, setFilter] = useState<SampleStatus | 'All'>('All')
   const [text, setText] = useState('')
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [close])
 
   const groups = useMemo(() => {
     const q = text.trim().toLowerCase()
