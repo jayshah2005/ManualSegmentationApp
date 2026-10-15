@@ -186,7 +186,10 @@ def export_objects(
                 files.append(f"{job.name}_preview.png")
 
         if cfg.saveMask:
-            cv2.imwrite(str(out_dir / f"{job.name}_mask.png"), (m > 0).astype(np.uint8) * 255)
+            ok, buf = cv2.imencode(".png", (m > 0).astype(np.uint8) * 255)
+            if not ok:
+                raise OSError(f"PNG encode failed for {job.name}_mask.png")
+            (out_dir / f"{job.name}_mask.png").write_bytes(buf.tobytes())
             files.append(f"{job.name}_mask.png")
 
         ys, xs = np.where(mask > 0)
