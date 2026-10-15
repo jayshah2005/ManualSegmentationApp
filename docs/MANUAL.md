@@ -271,6 +271,7 @@ The list in [section 9](#9-keyboard-shortcuts).
 | Download is slow or stops | Models come from Meta's servers (`dl.fbaipublicfiles.com`). Corporate networks may block it — try another network. |
 | It says *processor only* but I have an NVIDIA GPU | Settings → Model & GPU → **Switch to GPU version**, then restart when asked. |
 | *Driver too old* | Update your NVIDIA driver. |
+| **Windows:** *Switch to GPU version* fails or says a file is in use | Windows locks files that are in use. Close the app, delete the `.venv` folder inside the app folder, and run `start.bat` again; the setup screen then installs the GPU version from scratch. (A first-time install is not affected.) |
 | Out of memory / very slow | Lower **Working resolution**, choose a smaller model, or close other programs. |
 | No images listed | Check Settings → Folders. Only the formats in [section 7](#7-image-formats-in-detail) are listed; HEIC is not supported. Press *Rescan* in the image list after adding files. |
 | Spectral image looks too dark, green or strange | Settings → Image display → choose bands yourself, or change the contrast stretch. Brightness (top bar) only affects the screen. |
