@@ -19,7 +19,10 @@ class RgbSource(ImageSource):
             data = np.fromfile(str(self.path), dtype=np.uint8)
         except OSError as exc:
             raise LoadError(f"Cannot read {self.path.name}: {exc}") from exc
-        img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+        # JPEG/WebP carry an EXIF orientation that only IMREAD_COLOR applies (phone photos!).
+        # PNG/BMP keep IMREAD_UNCHANGED so 16-bit and grayscale data survive.
+        exif_aware = self.format in ("jpg", "webp")
+        img = cv2.imdecode(data, cv2.IMREAD_COLOR if exif_aware else cv2.IMREAD_UNCHANGED)
         if img is None:
             raise LoadError(f"{self.path.name} is not a readable image")
         if img.ndim == 2:
