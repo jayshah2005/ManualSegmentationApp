@@ -5,12 +5,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-dist/
 frontend/node_modules/
-frontend/dist/
 *.img
 .DS_Store
 
-# SAM 2 is cloned locally into third_party/sam2 (see README). Do not commit the
-# checkout or multi‑GB checkpoints.
-/third_party/sam2/
+# Legacy local SAM 2 checkout from before the in-app installer (not used any more).
+/third_party/
