@@ -46,6 +46,32 @@ def sample_status(progress: dict, key: str) -> str:
     return str(progress.get(key, {}).get("status") or "Pending")
 
 
+def get_rotation(progress: dict, key: str) -> int:
+    """Per-image rotation (0/90/180/270, clockwise) the user chose for this image."""
+    try:
+        return int(progress.get(key, {}).get("rotate", 0)) % 360
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_rotation(output_dir: Path | str, key: str, degrees: int) -> None:
+    """Remember an image's rotation without touching its status."""
+    progress = load_progress(output_dir)
+    entry = progress.setdefault(key, {})
+    if degrees % 360:
+        entry["rotate"] = degrees % 360
+    else:
+        entry.pop("rotate", None)
+    if not entry:
+        progress.pop(key, None)
+    save_progress(output_dir, progress)
+
+
+def update_entry(progress: dict, key: str, **fields) -> None:
+    """Merge ``fields`` into an image's entry so other data (its rotation) is kept."""
+    progress.setdefault(key, {}).update(fields)
+
+
 def next_sample_key(samples: list[Sample], current: str, progress: dict) -> str | None:
     """Next sample after ``current`` (wrapping): active ones first, then Skipped.
 

@@ -134,3 +134,57 @@ def test_orientation_change_after_open_does_not_corrupt_export(client):
     assert client.post("/api/session/save", json={}).status_code == 200
     png = cv2.imread(str(out / "one" / "object_001.png"), cv2.IMREAD_UNCHANGED)
     assert png.shape[:2] == (20, 20) and (png[:, :, 3] == 255).all()  # still the original square
+
+
+def _mask_of(obj):
+    import base64
+    return cv2.imdecode(np.frombuffer(base64.b64decode(obj["maskPngBase64"]), np.uint8), 0)
+
+
+def test_rotating_one_image_turns_objects_and_is_remembered(client):
+    inp, out = client.dirs
+    client.post("/api/session/load", json={"sampleKey": "one.png"})  # 80 wide x 60 high
+    box = {"x0": 30, "y0": 10, "x1": 70, "y1": 30}  # 40 wide x 20 high
+    client.post("/api/session/objects", json={"box": box})
+    client.post("/api/session/objects", json={"points": [{"x": 20, "y": 45}]})
+    s = client.post("/api/session/rotate", json={"degrees": 90}).json()
+    assert (s["width"], s["height"], s["rotation"]) == (60, 80, 90)
+    assert (s["nativeWidth"], s["nativeHeight"]) == (60, 80)
+    m = _mask_of(s["objects"][0])
+    ys, xs = np.where(m > 0)
+    # clockwise: x' = H-1-y, y' = x  ->  the 40x20 box becomes 20 wide x 40 high
+    assert (xs.min(), xs.max(), ys.min(), ys.max()) == (30, 49, 30, 69)
+    assert s["objects"][0]["box"] == {"x0": 30, "y0": 30, "x1": 50, "y1": 70}
+    assert s["objects"][1]["points"][0] == {"x": 14, "y": 20, "label": 1}  # (20,45) -> (59-45, 20)
+
+    # the rotated object can still be refined (SAM sees the rotated picture)
+    r = client.put("/api/session/objects/2/prompts", json={"points": [{"x": 14, "y": 20}, {"x": 16, "y": 22}]})
+    assert r.status_code == 200
+
+    # remembered: reopening the image keeps the rotation; the progress file keeps it next to the status
+    assert client.post("/api/session/load", json={"sampleKey": "one.png"}).json()["rotation"] == 90
+    client.post("/api/session/objects", json={"box": box_rot(box)})
+    assert client.post("/api/session/save", json={"complete": True}).status_code == 200
+    import json as _json
+    entry = _json.loads((out / "segmentation_progress.json").read_text())["one.png"]
+    assert entry["rotate"] == 90 and entry["status"] == "Completed"
+    png = cv2.imread(str(out / "one" / "object_001.png"), cv2.IMREAD_UNCHANGED)
+    assert png.shape[:2] == (40, 20)  # exported upright the way it was rotated on screen
+
+    # other images are unaffected; rotating back to 0 clears the entry's rotation
+    assert client.post("/api/session/load", json={"sampleKey": "plotA/two.png"}).json()["rotation"] == 0
+    client.post("/api/session/load", json={"sampleKey": "one.png"})
+    client.post("/api/session/rotate", json={"degrees": 270})
+    entry = _json.loads((out / "segmentation_progress.json").read_text())["one.png"]
+    assert "rotate" not in entry and entry["status"] == "Completed"
+
+
+def box_rot(box):
+    """The same 40x20 region as a box on the 90-degree-rotated 60x80 image."""
+    return {"x0": 30, "y0": 30, "x1": 50, "y1": 70}
+
+
+def test_rotate_rejects_bad_angles_and_needs_an_open_image(client):
+    assert client.post("/api/session/rotate", json={"degrees": 90}).status_code == 400
+    client.post("/api/session/load", json={"sampleKey": "one.png"})
+    assert client.post("/api/session/rotate", json={"degrees": 45}).status_code == 422

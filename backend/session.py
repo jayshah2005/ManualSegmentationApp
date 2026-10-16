@@ -52,6 +52,8 @@ class Session:
     orientation: OrientationSettings = field(default_factory=OrientationSettings)
     # (height, width) of the original after orientation; masks are scaled to this on export.
     native_hw: tuple[int, int] = (0, 0)
+    # Extra clockwise rotation of this image alone (0/90/180/270), applied after ``orientation``.
+    extra_rotate: int = 0
     objects: list[ObjectState] = field(default_factory=list)
     next_id: int = 1
 
@@ -89,13 +91,44 @@ class Session:
         bands: list[int],
         orientation: OrientationSettings,
         native_hw: tuple[int, int],
+        extra_rotate: int = 0,
     ) -> None:
         self.sample, self.source = sample, source
         self.orientation = orientation
         self.native_hw = native_hw
+        self.extra_rotate = extra_rotate
         self.rgb_image, self.bands_used = rgb, bands
         self.image_token = uuid.uuid4().hex
         self.objects, self.next_id = [], 1
+
+
+def _rotate_object(obj: "ObjectState", w: int, h: int, degrees: int) -> None:
+    from backend.pipeline.display import rotate_array, rotate_box, rotate_point
+
+    for name in ("sam_mask", "edited_mask", "brush_keep"):
+        arr = getattr(obj, name)
+        if arr is not None:
+            setattr(obj, name, rotate_array(arr, degrees))
+    obj.points = [(*rotate_point(x, y, w, h, degrees), lab) for x, y, lab in obj.points]
+    if obj.box is not None:
+        obj.box = rotate_box(obj.box, w, h, degrees)
+
+
+def rotate_session(session: "Session", degrees: int) -> None:
+    """Rotate the open image and everything drawn on it by ``degrees`` (clockwise, multiple of 90)."""
+    from backend.pipeline.display import rotate_array
+
+    d = degrees % 360
+    if not d or session.rgb_image is None:
+        return
+    w, h = session.width, session.height
+    session.rgb_image = rotate_array(session.rgb_image, d)
+    for obj in session.objects:
+        _rotate_object(obj, w, h, d)
+    if d % 180:
+        session.native_hw = (session.native_hw[1], session.native_hw[0])
+    session.extra_rotate = (session.extra_rotate + d) % 360
+    session.image_token = uuid.uuid4().hex  # SAM must embed the rotated picture again
 
 
 class SessionManager:

@@ -153,6 +153,7 @@ def export_objects(
     out_dir: Path,
     image_name: str,
     native_hw: tuple[int, int] | None = None,
+    extra_rotate: int = 0,
 ) -> list[dict]:
     """Write every job; returns one record per exported object.
 
@@ -169,7 +170,7 @@ def export_objects(
     # Native-resolution data is only needed for the cut-out itself.
     native: np.ndarray | None = None
     if fmt != "png" or info.kind == "rgb":
-        native = apply_orientation(source.read_cube(), orientation)
+        native = apply_orientation(source.read_cube(), orientation, extra_rotate)
     use_display_for_png = fmt == "png" and (
         info.kind != "rgb" or native is None or native.dtype not in (np.uint8, np.uint16)
     )
