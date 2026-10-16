@@ -19,6 +19,7 @@ import { rgbUrl } from '../api/client'
 import { useViewport, computeTransform, type Region } from '../hooks/useViewport'
 import { useEditor, type EditObject } from '../state/editor'
 import { useWorkspace } from '../state/workspace'
+import { IconRotateLeft, IconRotateRight } from '../components/Icons'
 import { brushRadius, stampLine } from './brush'
 import { cutoutFor, overlayFor, overlayBounds, resetCanvasCaches } from './bitmaps'
 import { objectColor } from './colors'
@@ -63,6 +64,7 @@ export function SegmentationCanvas({ region: regionProp, focusId = null, classNa
   const rgbKey = useEditor((s) => s.rgbKey)
   const busy = useEditor((s) => s.busy)
   const loading = useEditor((s) => s.loading)
+  const rotate = useEditor((s) => s.rotate)
   const appearance = useWorkspace((s) => s.appearance)
 
   const imgW = image?.width ?? 0
@@ -184,7 +186,7 @@ export function SegmentationCanvas({ region: regionProp, focusId = null, classNa
   useEffect(() => {
     resetCanvasCaches()
     reset()
-  }, [image?.sampleKey, regionProp, reset])
+  }, [image?.sampleKey, rgbKey, regionProp, reset])
 
   useEffect(() => {
     const el = wrapRef.current
@@ -482,7 +484,22 @@ export function SegmentationCanvas({ region: regionProp, focusId = null, classNa
           {tool === 'brush' && (active ? `Painting object ${activeNumber} — ${brushMode === 'add' ? 'adding' : 'erasing'}.` : 'Select an object, then paint.')}
         </div>
       )}
-      {(busy || loading) && <div className="canvas-busy">{loading ? 'Opening image…' : 'Outlining…'}</div>}
+      {image && focusId == null && !loading && (
+        <div className="canvas-rotate" role="group" aria-label="Rotate this image">
+          <button type="button" className="icon-btn" disabled={busy} onClick={() => void rotate(270)} title="Rotate this image left (Shift+R)" aria-label="Rotate left">
+            <IconRotateLeft />
+          </button>
+          <button type="button" className="icon-btn" disabled={busy} onClick={() => void rotate(90)} title="Rotate this image right (R)" aria-label="Rotate right">
+            <IconRotateRight />
+          </button>
+          {image.rotation !== 0 && (
+            <button type="button" className="chip" disabled={busy} onClick={() => void rotate((360 - image.rotation) as 90 | 180 | 270)} title="Undo this image's rotation">
+              Rotated {image.rotation}° · reset
+            </button>
+          )}
+        </div>
+      )}
+      {(busy || loading) && <div className="canvas-busy">{loading ? 'Opening image…' : 'Working…'}</div>}
     </div>
   )
 }

@@ -93,3 +93,15 @@ export const IconPlus = () => (
     <path d="M12 5v14M5 12h14" />
   </Svg>
 )
+export const IconRotateRight = () => (
+  <Svg>
+    <path d="M20 6v5h-5" />
+    <path d="M20 11a8 8 0 10-2.3 6.3" />
+  </Svg>
+)
+export const IconRotateLeft = () => (
+  <Svg>
+    <path d="M4 6v5h5" />
+    <path d="M4 11a8 8 0 112.3 6.3" />
+  </Svg>
+)

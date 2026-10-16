@@ -17,6 +17,7 @@ import {
   addObject,
   deleteObject,
   loadSample,
+  rotateImage,
   patchObject,
   resetObjectMask,
   saveSession,
@@ -37,6 +38,8 @@ import {
   pngBase64ToMask,
   type BrushMode,
 } from '../canvas/brush'
+import { resetCanvasCaches } from '../canvas/bitmaps'
+import { clearVisibleCache } from '../canvas/visible'
 import { useWorkspace } from './workspace'
 
 export type Tool = 'point' | 'box' | 'select' | 'brush'
@@ -74,9 +77,14 @@ type EditorState = {
   busy: boolean
   saving: boolean
   dirty: boolean
+  /** The zoomed object editor is open (page-level shortcuts that change the picture pause). */
+  focusOpen: boolean
 
   openSample: (key: string, opts?: { force?: boolean }) => Promise<boolean>
   closeImage: () => void
+  /** Rotate this image alone; objects, clicks and boxes turn with it. */
+  rotate: (degrees: 90 | 180 | 270) => Promise<void>
+  setFocusOpen: (open: boolean) => void
   setTool: (t: Tool) => void
   setBrushMode: (m: BrushMode) => void
   setBrushSize: (n: number) => void
@@ -188,6 +196,7 @@ export const useEditor = create<EditorState>((set, get) => {
     busy: false,
     saving: false,
     dirty: false,
+    focusOpen: false,
 
     openSample: async (sampleKey, opts) => {
       if (!ws().ensureEngine(sampleKey)) return false // set up SAM and the model before any image opens
@@ -235,6 +244,41 @@ export const useEditor = create<EditorState>((set, get) => {
     closeImage: () => {
       loadSeq++
       set({ image: null, objects: [], revs: {}, activeId: null, dirty: false, loading: false })
+    },
+
+    setFocusOpen: (focusOpen) => set({ focusOpen }),
+
+    rotate: async (degrees) => {
+      const st = get()
+      if (!st.image || st.busy || st.loading || st.saving || st.focusOpen) return
+      set({ busy: true })
+      try {
+        // The server rotates its own copy of every mask, so it must have the latest brush work first.
+        await get().flushPending()
+        const info = await guarded((k) => rotateImage(k, degrees))
+        if (!info) return
+        const { objects: payloads, ...meta } = info
+        const before = new Map(get().objects.map((o) => [o.id, o]))
+        const objects = await Promise.all(
+          payloads.map(async (p) => {
+            const prev = before.get(p.id)
+            const next = await hydrate(p, meta.width, meta.height, prev)
+            return { ...next, edited: prev?.edited ?? false }
+          }),
+        )
+        resetCanvasCaches()
+        clearVisibleCache()
+        set((s) => ({
+          image: s.image ? { ...s.image, ...meta } : meta,
+          objects,
+          revs: Object.fromEntries(objects.map((o) => [o.id, (s.revs[o.id] ?? 0) + 1])),
+          rgbKey: Date.now(),
+        }))
+      } catch (e) {
+        ws().toast('error', errText(e))
+      } finally {
+        set({ busy: false })
+      }
     },
 
     setTool: (tool) => set({ tool }),

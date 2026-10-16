@@ -59,6 +59,7 @@ export function HelpDrawer() {
           <h3>Tips</h3>
           <ul>
             <li>Scroll to zoom; hold Space and drag to move the picture.</li>
+            <li>Image sideways? Use the rotate buttons above the picture (or press <kbd>R</kbd>). It only affects that image; Settings → Image display rotates all of them.</li>
             <li>Hyperspectral and multispectral files are shown as a colour picture. Change which bands are used in Settings → Image display. The exported file still contains all bands.</li>
             <li>Results mirror your input folders. Finished images are remembered, so you can close the app and continue later.</li>
           </ul>
