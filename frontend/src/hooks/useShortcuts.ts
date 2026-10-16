@@ -56,6 +56,12 @@ export function useShortcuts() {
         case 'D':
           ed.setBrushMode('erase')
           break
+        case 'r':
+          void ed.rotate(90)
+          break
+        case 'R':
+          void ed.rotate(270)
+          break
         case 'n':
         case 'N':
           ed.newObject()

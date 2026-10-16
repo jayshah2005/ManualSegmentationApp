@@ -115,6 +115,10 @@ button.btn-link { display: inline; }
 .main-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .canvas-hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); background: rgba(10, 13, 17, 0.82); border: 1px solid var(--border); padding: 0.4rem 0.9rem; border-radius: 999px; font-size: 0.86rem; color: var(--text); pointer-events: none; max-width: 92%; text-align: center; }
 .canvas-busy { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; padding: 0.35rem 1rem; border-radius: 999px; font-weight: 600; font-size: 0.88rem; box-shadow: var(--shadow); }
+.canvas-rotate { position: absolute; top: 12px; right: 12px; display: flex; align-items: center; gap: 0.25rem; background: rgba(10, 13, 17, 0.78); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.2rem; backdrop-filter: blur(4px); }
+.canvas-rotate .icon-btn { color: var(--text); }
+.canvas-rotate .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.canvas-rotate .chip { color: var(--text); border-color: var(--accent); margin-right: 0.2rem; }
 .canvas-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.7rem; text-align: center; padding: 2rem; color: var(--muted); }
 .canvas-empty h2 { color: var(--text); font-size: 1.4rem; }
 

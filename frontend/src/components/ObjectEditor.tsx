@@ -41,6 +41,11 @@ export function ObjectEditor({ objectId, onClose }: { objectId: number; onClose:
   }, [objectId])
 
   useEffect(() => {
+    useEditor.getState().setFocusOpen(true)
+    return () => useEditor.getState().setFocusOpen(false)
+  }, [])
+
+  useEffect(() => {
     const prev = useEditor.getState().tool
     useEditor.getState().select(objectId)
     useEditor.getState().setTool('brush')

@@ -30,6 +30,7 @@ const SHORTCUTS: [string, string][] = [
   ['A / D', 'Brush: add to / erase from the selected object'],
   ['[  ]', 'Make the brush smaller / larger'],
   ['N', 'Start a new object'],
+  ['R / Shift+R', 'Rotate the open image right / left (this image only)'],
   ['Backspace', 'Remove the last point of the selected object'],
   ['Delete', 'Delete the selected object'],
   ['Ctrl/Cmd + Z', 'Undo brush stroke (add Shift to redo)'],
@@ -191,7 +192,7 @@ export function SettingsModal() {
               <p className="muted">Big photos are shrunk while you work to keep things fast. Saved cut-outs are still made from the full-size original.</p>
               <h3>Orientation</h3>
               <label className="field">
-                <span>Rotate</span>
+                <span>Rotate every image</span>
                 <select value={draft.orientation.rotate} onChange={(e) => upd('orientation', { rotate: Number(e.target.value) as 0 | 90 | 180 | 270 })}>
                   <option value={0}>None</option>
                   <option value={90}>90° clockwise</option>
@@ -211,7 +212,7 @@ export function SettingsModal() {
                 <input type="checkbox" checked={draft.orientation.flipV} onChange={(e) => upd('orientation', { flipV: e.target.checked })} />
                 Mirror top ↔ bottom
               </label>
-              <p className="muted">Exported files use the same orientation you see on screen.</p>
+              <p className="muted">This applies to all your images. To rotate just one image, use the rotate buttons above the picture (or the R key) — that choice is remembered for that image and is added on top of this setting. Exported files match what you see on screen.</p>
             </>
           )}
 
@@ -254,14 +255,15 @@ export function SettingsModal() {
 
           {tab === 'appearance' && (
             <>
-              <p className="muted">These only change how things look on your screen, not the exported files.</p>
+              <p className="muted">These only change how things look on your screen, never the saved files. They apply instantly and are remembered in this browser, so there is nothing to save here.</p>
               <label className="field">
-                <span>Outline colour</span>
+                <span>Highlight colour</span>
                 <input type="color" value={appearance.maskColor} onChange={(e) => useWorkspace.getState().setMaskColor(e.target.value)} />
               </label>
+              <p className="muted">The tint drawn over each outlined object. The first object uses this colour; the others shift its hue so neighbours are easy to tell apart.</p>
               <label className="slider-field">
                 <span>
-                  Outline strength <strong>{Math.round(appearance.maskOpacity * 100)}%</strong>
+                  Highlight strength <strong>{Math.round(appearance.maskOpacity * 100)}%</strong>
                 </span>
                 <input type="range" min={0.05} max={1} step={0.05} value={appearance.maskOpacity} onChange={(e) => useWorkspace.getState().setMaskOpacity(Number(e.target.value))} />
               </label>

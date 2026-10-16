@@ -127,6 +127,8 @@ export type SessionInfo = {
   status: SampleStatus
   width: number
   height: number
+  /** Extra clockwise rotation (0/90/180/270) the user gave this image alone. */
+  rotation: number
   nativeWidth: number
   nativeHeight: number
   kind: 'rgb' | 'cube'
@@ -275,5 +277,8 @@ export const saveSession = (
   sampleKey: string,
   opts: { complete: boolean; forceOverwrite?: boolean; masks?: MaskUpload[] },
 ) => post<SaveResult>('/api/session/save', { sampleKey, ...opts })
+
+export const rotateImage = (sampleKey: string, degrees: 90 | 180 | 270) =>
+  post<SessionInfo>('/api/session/rotate', { sampleKey, degrees })
 
 export const skipSession = () => post<{ nextSampleKey: string | null }>('/api/session/skip')
