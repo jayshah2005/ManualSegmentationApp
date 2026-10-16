@@ -20,8 +20,8 @@ from backend.pipeline import masks as masks_mod
 from backend.pipeline import progress as progress_mod
 from backend.pipeline.discover import SampleIndex
 from backend.pipeline.loaders import LoadError, open_source
-from backend.schemas import LoadRequest, MasksRequest, ObjectPatch, PromptsRequest, SaveRequest
-from backend.session import Session, SessionManager
+from backend.schemas import LoadRequest, MasksRequest, ObjectPatch, PromptsRequest, RotateRequest, SaveRequest
+from backend.session import Session, SessionManager, rotate_session
 from backend.settings import SettingsStore
 
 router = APIRouter(tags=["session"])
@@ -48,13 +48,14 @@ def load_session(
     try:
         source = open_source(sample.path)
         orientation = display_mod.effective_orientation(source.info(), settings.orientation)
-        rgb, bands = display_mod.build_display_rgb(source, settings.display, orientation)
+        extra = progress_mod.get_rotation(progress_mod.load_progress(settings.outputDir), sample.key)
+        rgb, bands = display_mod.build_display_rgb(source, settings.display, orientation, extra)
         info = source.info()
-        native_hw = display_mod.oriented_size(info.width, info.height, orientation)
+        native_hw = display_mod.oriented_size(info.width, info.height, orientation, extra)
     except (LoadError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     with mgr.locked() as session:
-        session.start(sample, source, rgb, bands, orientation, native_hw)
+        session.start(sample, source, rgb, bands, orientation, native_hw, extra)
         return common.session_response(session, settings)
 
 
@@ -156,6 +157,25 @@ def delete_object(
         return {"deletedId": object_id}
 
 
+@router.post("/api/session/rotate")
+def rotate_image(
+    body: RotateRequest,
+    mgr: SessionManager = Depends(get_session_mgr),
+    store: SettingsStore = Depends(get_settings_store),
+):
+    """Rotate just this image (objects, clicks and boxes turn with it); the choice is remembered."""
+    settings = store.get()
+    with mgr.locked() as session:
+        common.assert_sample_key(session, body.sampleKey)
+        rotate_session(session, body.degrees)
+        if settings.outputDir:
+            try:
+                progress_mod.set_rotation(settings.outputDir, session.sample_key, session.extra_rotate)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return common.session_response(session, settings)
+
+
 @router.post("/api/session/suggest-borders")
 def suggest_borders(
     sampleKey: str | None = None,
@@ -247,12 +267,13 @@ def save_session(
         try:
             records = export_mod.export_objects(
                 source=session.source, display_rgb=session.rgb_image,
-                orientation=session.orientation, native_hw=session.native_hw, cfg=settings.export,
+                orientation=session.orientation, native_hw=session.native_hw, extra_rotate=session.extra_rotate,
+                cfg=settings.export,
                 jobs=jobs, out_dir=out_dir, image_name=session.sample.name,
             )
             progress = progress_mod.load_progress(settings.outputDir)
             status = "Completed" if body.complete else "Incomplete"
-            progress[session.sample_key] = {"status": status, "count": len(records)}
+            progress_mod.update_entry(progress, session.sample_key, status=status, count=len(records))
             progress_mod.save_progress(settings.outputDir, progress)
         except (OSError, RuntimeError, ValueError, LoadError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -283,7 +304,8 @@ def skip_session(
         common.assert_sample_key(session, None)
         try:
             progress = progress_mod.load_progress(settings.outputDir)
-            progress[session.sample_key] = {"status": "Skipped"}
+            progress_mod.update_entry(progress, session.sample_key, status="Skipped")
+            progress[session.sample_key].pop("count", None)
             progress_mod.save_progress(settings.outputDir, progress)
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -64,3 +64,10 @@ class SaveRequest(BaseModel):
     sampleKey: str | None = None
     complete: bool = True
     forceOverwrite: bool = False
+
+
+class RotateRequest(BaseModel):
+    """Rotate the open image alone, clockwise by 90, 180 or 270 degrees."""
+
+    degrees: Literal[90, 180, 270]
+    sampleKey: str | None = None

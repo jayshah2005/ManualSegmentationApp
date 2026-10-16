@@ -3,7 +3,7 @@ import numpy as np
 from spectral.io import envi
 
 from backend.pipeline.discover import discover
-from backend.pipeline.display import apply_orientation, auto_bands, build_display_rgb, effective_orientation, limit_size, oriented_size
+from backend.pipeline.display import rotate_array, rotate_box, rotate_point, apply_orientation, auto_bands, build_display_rgb, effective_orientation, limit_size, oriented_size
 from backend.pipeline.loaders import open_source
 from backend.settings import DisplaySettings, OrientationSettings
 
@@ -99,3 +99,29 @@ def test_working_resolution_cap():
     assert limit_size(big, 300).shape == (150, 300, 3)
     assert oriented_size(600, 300, OrientationSettings(rotate=90)) == (600, 300)
     assert oriented_size(600, 300, OrientationSettings()) == (300, 600)
+
+
+def test_rotation_helpers_agree_with_each_other():
+    h, w = 4, 7
+    img = np.arange(h * w).reshape(h, w)
+    for deg in (90, 180, 270):
+        rot = rotate_array(img, deg)
+        for (x, y) in [(0, 0), (6, 0), (2, 3), (6, 3)]:
+            nx, ny = rotate_point(x, y, w, h, deg)
+            assert rot[ny, nx] == img[y, x], (deg, x, y)
+        # box in edge coordinates covers exactly the rotated pixels
+        x0, y0, x1, y1 = rotate_box((1, 0, 4, 2), w, h, deg)
+        covered = np.zeros_like(rot, bool)
+        covered[y0:y1, x0:x1] = True
+        src = np.zeros((h, w), bool)
+        src[0:2, 1:4] = True
+        assert (rotate_array(src, deg) == covered).all(), deg
+    assert rotate_array(img, 360).shape == img.shape
+
+
+def test_extra_rotation_stacks_on_the_global_orientation():
+    a = np.arange(6).reshape(2, 3)
+    base = OrientationSettings(rotate=90)
+    assert (apply_orientation(a, base, 90) == apply_orientation(a, OrientationSettings(rotate=180))).all()
+    assert apply_orientation(a, OrientationSettings(), 90).shape == (3, 2)
+    assert oriented_size(3, 2, OrientationSettings(rotate=90), 90) == (2, 3)

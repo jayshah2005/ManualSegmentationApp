@@ -45,8 +45,11 @@ def effective_orientation(info: SourceInfo, cfg: OrientationSettings) -> Orienta
     return cfg
 
 
-def apply_orientation(arr: np.ndarray, cfg: OrientationSettings) -> np.ndarray:
-    """Rotate clockwise then flip. Works on ``(H, W)`` and ``(H, W, B)`` arrays."""
+def apply_orientation(arr: np.ndarray, cfg: OrientationSettings, extra: int = 0) -> np.ndarray:
+    """Rotate clockwise, flip, then rotate by the per-image ``extra`` (0/90/180/270).
+
+    Works on ``(H, W)`` and ``(H, W, B)`` arrays.
+    """
     out = arr
     if cfg.rotate:
         out = np.rot90(out, k=-(cfg.rotate // 90), axes=(0, 1))
@@ -54,7 +57,42 @@ def apply_orientation(arr: np.ndarray, cfg: OrientationSettings) -> np.ndarray:
         out = out[:, ::-1]
     if cfg.flipV:
         out = out[::-1]
+    if extra % 360:
+        out = np.rot90(out, k=-((extra % 360) // 90), axes=(0, 1))
     return np.ascontiguousarray(out)
+
+
+def rotate_array(arr: np.ndarray, degrees: int) -> np.ndarray:
+    """Rotate ``(H, W[, B])`` clockwise by 90/180/270 degrees."""
+    return np.ascontiguousarray(np.rot90(arr, k=-((degrees % 360) // 90), axes=(0, 1)))
+
+
+def rotate_point(x: int, y: int, width: int, height: int, degrees: int) -> tuple[int, int]:
+    """Where pixel ``(x, y)`` of a ``width``×``height`` image lands after a clockwise rotation."""
+    d = degrees % 360
+    if d == 90:
+        return height - 1 - y, x
+    if d == 180:
+        return width - 1 - x, height - 1 - y
+    if d == 270:
+        return y, width - 1 - x
+    return x, y
+
+
+def rotate_box(box: tuple[int, int, int, int], width: int, height: int, degrees: int) -> tuple[int, int, int, int]:
+    """Rotate a box given in edge coordinates ``(x0, y0, x1, y1)``."""
+    x0, y0, x1, y1 = box
+    d = degrees % 360
+    if d == 90:
+        corners = [(height - y0, x0), (height - y1, x1)]
+    elif d == 180:
+        corners = [(width - x0, height - y0), (width - x1, height - y1)]
+    elif d == 270:
+        corners = [(y0, width - x0), (y1, width - x1)]
+    else:
+        return box
+    (ax, ay), (bx, by) = corners
+    return min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)
 
 
 def stretch_to_uint8(arr: np.ndarray, low: float, high: float) -> np.ndarray:
@@ -84,13 +122,13 @@ def limit_size(rgb: np.ndarray, max_size: int) -> np.ndarray:
     return cv2.resize(rgb, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
 
 
-def oriented_size(width: int, height: int, cfg: OrientationSettings) -> tuple[int, int]:
-    """``(height, width)`` of an image after ``cfg``'s rotation."""
-    return (width, height) if cfg.rotate in (90, 270) else (height, width)
+def oriented_size(width: int, height: int, cfg: OrientationSettings, extra: int = 0) -> tuple[int, int]:
+    """``(height, width)`` of an image after ``cfg``'s rotation plus the per-image ``extra``."""
+    return (width, height) if (cfg.rotate + extra) % 180 else (height, width)
 
 
 def build_display_rgb(
-    source: ImageSource, display: DisplaySettings, orientation: OrientationSettings
+    source: ImageSource, display: DisplaySettings, orientation: OrientationSettings, extra_rotate: int = 0
 ) -> tuple[np.ndarray, list[int]]:
     """Return ``(uint8 RGB image (H, W, 3), band indices used)`` with orientation applied."""
     info = source.info()
@@ -104,4 +142,4 @@ def build_display_rgb(
         used = resolve_bands(info.bands, info.wavelengths, display)
         rgb = source.read_bands(used)
     rgb = stretch_to_uint8(rgb, display.stretchLow, display.stretchHigh)
-    return limit_size(apply_orientation(rgb, orientation), display.maxSize), used
+    return limit_size(apply_orientation(rgb, orientation, extra_rotate), display.maxSize), used
