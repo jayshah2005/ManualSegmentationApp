@@ -85,7 +85,7 @@ If you ever delete the model file or change to a model you have not downloaded, 
 | **Top bar — tools** | **Point**, **Box**, **Select**, **Brush** (see below). |
 | **Top bar — Brightness** | Makes the *picture* brighter or darker on your screen only. It never changes saved files. |
 | **Top bar — ⚙ and ?** | Settings and the quick help panel. |
-| **Picture** | Your image with the outlines on top. Scroll to zoom, hold Space and drag to move. |
+| **Picture** | Your image with the outlines on top. Scroll to zoom, hold Space and drag to move. The two small arrows at its top-right **rotate this image**. |
 | **Objects panel (right)** | One card per object: a preview, its name, **Trim edge**, **Fine-tune**, and delete. |
 | **Bottom bar** | Image information and the **Skip image / Save and stay / Save & next** buttons. |
 
@@ -132,6 +132,12 @@ Each object card has a **Trim edge** slider that shaves 0–50 pixels off the ou
 ![Fine-tune editor](images/08-fine-tune.jpg)
 
 Click **Fine-tune** on a card for a close-up. Everything outside the object is dimmed. Paint with the brush, scroll to zoom, hold Space and drag to move, press Esc or **Done** to return.
+
+### Rotating one image
+
+If an image is sideways or upside down, use the two arrow buttons at the top-right of the picture (or press **R** to turn it right and **Shift + R** to turn it left). Objects, points and boxes you already made turn with the picture. The choice is remembered for that image only, even after you close the app, and a **Rotated 90° · reset** button appears so you can undo it. Saved cut-outs use the orientation you see.
+
+To rotate *every* image the same way, use Settings → Image display → *Rotate every image*. The two combine: the per-image rotation is added on top of the setting.
 
 ### Naming objects
 
@@ -198,7 +204,7 @@ How spectral images become the colour picture you click on (photos are shown as 
 - **Bands** — *Automatic* picks the bands closest to red, green and blue light from the file's wavelengths. *Choose bands myself* lets you type three band numbers (counting from 0).
 - **Contrast stretch** — which dark and bright percentages are clipped. Raise the first or lower the second for more contrast.
 - **Working resolution** — big photos are shrunk to this size (longest side) while you work, which keeps clicking fast and memory low. **Saved cut-outs still use the full-size original.** *Original size* disables shrinking.
-- **Orientation** — rotate and mirror. The app also turns **Specim IQ** captures upright automatically (switch it off if yours are already upright). Saved files use the orientation you see.
+- **Orientation** — *Rotate every image* and mirror options apply to all images. (To rotate just one image, use the arrows on the picture instead; that is added on top.) The app also turns **Specim IQ** captures upright automatically (switch it off if yours are already upright). Saved files use the orientation you see.
 
 Changing display settings re-opens the current image (unsaved objects are lost — the app asks first).
 
@@ -211,7 +217,7 @@ Changing display settings re-opens the current image (unsaved objects are lost �
 - **Table of objects** — CSV, COCO JSON (for machine-learning tools) or none.
 
 ### Appearance
-Outline colour and strength, and picture brightness. Screen only.
+**Highlight colour** and **strength** control the coloured tint drawn over each outlined object; the first object uses your colour and the others shift its hue so neighbouring objects are easy to tell apart. **Picture brightness** brightens or darkens the picture. These only change how things look on your screen and never the saved files, so they apply instantly and are remembered in this browser — there is nothing to save.
 
 ### Shortcuts
 The list in [section 9](#9-keyboard-shortcuts).
@@ -253,6 +259,7 @@ The list in [section 9](#9-keyboard-shortcuts).
 | **A** / **D** | Brush: add / erase |
 | **[** / **]** | Smaller / larger brush |
 | **N** | New object |
+| **R** / **Shift + R** | Rotate this image right / left |
 | **Backspace** | Remove the last point of the active object |
 | **Delete** | Delete the active object |
 | **Ctrl/Cmd + Z** | Undo brush stroke (**Shift** for redo) |
@@ -275,7 +282,7 @@ The list in [section 9](#9-keyboard-shortcuts).
 | Out of memory / very slow | Lower **Working resolution**, choose a smaller model, or close other programs. |
 | No images listed | Check Settings → Folders. Only the formats in [section 7](#7-image-formats-in-detail) are listed; HEIC is not supported. Press *Rescan* in the image list after adding files. |
 | Spectral image looks too dark, green or strange | Settings → Image display → choose bands yourself, or change the contrast stretch. Brightness (top bar) only affects the screen. |
-| Spectral image is sideways | Settings → Image display → Orientation. (Specim IQ captures are turned automatically.) |
+| An image is sideways | Use the rotate arrows on the picture (or **R**) for that image, or Settings → Image display → *Rotate every image* for all of them. (Specim IQ captures are turned automatically.) |
 | The outline grabs the wrong thing | Right-click the wrong part to exclude it, add a box, or add more include points. |
 | Outline has a thin bright/dark border | Raise **Trim edge** on that object. |
 | *Files already exist* when saving | You saved this image before. Choose *Replace* to overwrite, or rename the objects. |

@@ -7,6 +7,7 @@
 ## What you can do
 
 - **Point at it.** Click an object to outline it. Click more spots to add to it, right-click to leave an area out, or drag a box.
+- **Straighten it.** Rotate any image with one click (or the R key); Settings can rotate every image at once.
 - **Fix it.** Paint with a brush to add or erase pixels, or trim a few pixels off the edge. A zoomed-in editor makes fine work easy.
 - **Process whole folders.** Choose a folder of images (sub-folders are fine) and a folder for the results. Progress is remembered, so you can stop and continue another day.
 - **Keep your data intact.** Photos become PNG cut-outs with a transparent background. Multispectral and hyperspectral files keep **all their bands** in the same file type, with a colour preview next to them so you can see what you saved.
